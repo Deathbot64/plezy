@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Plezy (Home Assistant fork) Updates</title>
+    <item>
+      <title>Version 2.23.0</title>
+      <sparkle:version>153</sparkle:version>
+      <sparkle:shortVersionString>2.23.0</sparkle:shortVersionString>
+      <enclosure url="https://github.com/Deathbot64/plezy/releases/download/v2.23.0-ha2/plezy-windows-installer.exe"
+       length="58214296" type="application/octet-stream"
+       sparkle:edSignature="pt5qrzhlqwxfvzsI4M0zG1f168MLE1Hu+9iKqVVFaoWr7Cw7hEMIfM59jLyoOLvKStO21DV77UH8Ke+ijVDiCQ=="
+       sparkle:installerArguments="/SILENT /SP-"
+       sparkle:os="windows" />
+    </item>
+  </channel>
+</rss>
