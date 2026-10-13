@@ -107,6 +107,7 @@ class _SettingsScreenState extends State<SettingsScreen> with FocusableTab, Moun
   static const _kVideoPlayerControls = 'video_player_controls';
   static const _kVideoPlayerNavigation = 'video_player_navigation';
   static const _kCompanionRemoteServer = 'companion_remote_server';
+  static const _kPlexCompanion = 'plex_companion';
   static const _kCrashReporting = 'crash_reporting';
   static const _kDebugLogging = 'debug_logging';
   static const _kAutoHidePerformanceOverlay = 'auto_hide_performance_overlay';
@@ -518,6 +519,16 @@ class _SettingsScreenState extends State<SettingsScreen> with FocusableTab, Moun
           icon: Symbols.phone_android_rounded,
           title: t.settings.companionRemoteServer,
           subtitle: t.settings.companionRemoteServerDescription,
+        ),
+      if (PlatformDetector.shouldActAsRemoteHost(context))
+        SettingSwitchTile(
+          focusNode: _focusTracker.get(_kPlexCompanion),
+          pref: settings.SettingsService.enablePlexCompanion,
+          icon: Symbols.cast_rounded,
+          title: 'Plex Companion (Home Assistant)',
+          subtitle:
+              'Let Home Assistant and Plex apps on your network find and control this player. '
+              'Anyone on your network can control it while this is on.',
         ),
     ];
     // Keyboard platforms render nothing until the shortcuts service loads; an

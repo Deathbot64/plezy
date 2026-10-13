@@ -102,6 +102,8 @@ import 'video_player/first_frame_gate.dart';
 import 'video_player/frame_rate_matcher.dart';
 import 'video_player/player_output_format.dart';
 import 'video_player/companion_remote_binding.dart';
+import 'video_player/plex_companion_binding.dart';
+import '../services/plex_companion/plex_companion_controller.dart' show PlexCompanionBridge;
 import 'video_player/media_controls_screen_controller.dart';
 import 'video_player/media_reload_outcome.dart';
 import 'video_player/spurious_eof_recovery.dart';
@@ -1027,6 +1029,24 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     readProvider: () => context.read<CompanionRemoteProvider>(),
   );
 
+  /// Exposes this player to Plex Companion controllers (Home Assistant, Plex
+  /// apps). Attached with [_companionRemote] and released with it.
+  late final PlexCompanionBinding _plexCompanion = PlexCompanionBinding(
+    player: () => player,
+    isMounted: () => mounted,
+    metadata: () => _currentMetadata,
+    canControlPlayback: () => _canControlPlayback(),
+    volumeController: () => _volumeController,
+    hasNextItem: () => _hasNextItem,
+    onPlay: (p) => _playWithPlaybackIntent(p),
+    onPause: (p) => _pauseWithPlaybackIntent(p),
+    onSeek: (position) => _seekPlayback(position),
+    onStop: () => _stopVideoAndExit(),
+    onNextItem: () => _navigateToNextItem(),
+    onPreviousItem: () => _navigateToPreviousItem(),
+    onSkipStep: ({required bool forward}) => _skipByConfiguredStep(forward: forward),
+  );
+
   /// Backend-neutral lookup. Returns whichever client (Plex or Jellyfin)
   /// owns this item. Used by the player initialization path.
   MediaServerClient? _getMediaServerClient(BuildContext context) {
@@ -1473,6 +1493,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
 
     _companionRemote.bind();
+    PlexCompanionBridge.instance.attach(this, _plexCompanion);
     _setupAppleTvRemotePlaybackActions();
 
     _sleepTimerSubscription = SleepTimerService().onPrompt.listen((_) {
@@ -2426,6 +2447,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     _transitionGate.completeIdleWaiters();
 
     _companionRemote.unbind();
+    PlexCompanionBridge.instance.detach(this);
 
     final isReplacingWithVideo = _isReplacingWithVideo;
     final successorLease = _videoPlayerRoute?.replacementWatchTogetherLease;
@@ -2937,6 +2959,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     _stopLiveTimelineUpdates();
     _progressTracker?.stopTracking();
     _companionRemote.unbind();
+    PlexCompanionBridge.instance.detach(this);
     _detachFromWatchTogetherSession(exiting: true);
     _detachPipStateListener();
     _clearAutoPipEnteringCallback();

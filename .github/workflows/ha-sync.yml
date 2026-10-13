@@ -1,0 +1,342 @@
+# Keeps this fork in step with edde746/plezy, ships a Windows build with the
+# Home Assistant (Plex Companion) support, and - once the signing key from
+# AUTO-UPDATE-SETUP.md is configured - publishes an installer plus an update
+# feed so installed copies update themselves.
+#
+# Flow: merge upstream into a staging branch -> run the Companion tests and a
+# full Windows release build on that branch -> only if everything passes,
+# fast-forward `main` to it and (when upstream shipped a new version) publish a
+# GitHub Release and update the feed.
+#
+# Save as .github/workflows/ha-sync.yml on the fork's `main` branch.
+name: Sync upstream and build (Home Assistant fork)
+
+on:
+  schedule:
+    - cron: "17 5 * * *" # daily, 05:17 UTC
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: Build and release even if upstream has no new version
+        type: boolean
+        default: false
+
+concurrency:
+  group: ha-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  UPSTREAM_REPO: edde746/plezy
+  UPSTREAM_BRANCH: main
+
+jobs:
+  sync:
+    name: Merge upstream
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+      conflict: ${{ steps.merge.outputs.conflict }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # A personal access token is needed because upstream sometimes edits
+          # files under .github/workflows, which the default token may not push.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Merge upstream into staging branch
+        id: merge
+        env:
+          FORCE_BUILD: ${{ github.event.inputs.force_build }}
+        run: |
+          set -euo pipefail
+          git config user.name "ha-sync[bot]"
+          git config user.email "ha-sync@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+
+          if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" HEAD && [ "${FORCE_BUILD:-false}" != "true" ]; then
+            echo "Already up to date with upstream."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git checkout -B auto/sync
+          if git merge --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+            git push --force origin auto/sync
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort
+            echo "Merge conflict with upstream."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  conflict-notice:
+    name: Report merge conflict
+    needs: sync
+    if: needs.sync.outputs.conflict == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open an issue (once)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          title="Upstream sync needs manual conflict resolution"
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')"
+          if [ -z "$existing" ]; then
+            gh issue create --title "$title" --body "Merging ${UPSTREAM_REPO} into this fork conflicts with the Home Assistant changes, so nothing was updated. Run: git fetch upstream && git merge upstream/main, resolve the conflicts (they will be in the plex_companion hooks), push, then re-run this workflow. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
+  build-windows:
+    name: Test and build Windows
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: windows-latest
+    env:
+      # True once the update-signing key (AUTO-UPDATE-SETUP.md) is configured.
+      # Only a yes/no is exposed here, never the key itself.
+      HAS_UPDATER: ${{ vars.SPARKLE_PUBLIC_KEY != '' && secrets.SPARKLE_PRIVATE_KEY != '' }}
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      build: ${{ steps.meta.outputs.build }}
+      tag: ${{ steps.meta.outputs.tag }}
+      release: ${{ steps.meta.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: auto/sync
+
+      - name: Read version and decide whether to publish a release
+        id: meta
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_BUILD: ${{ github.event.inputs.force_build }}
+        run: |
+          $full = ((Get-Content pubspec.yaml | Where-Object { $_ -match '^version:' }) -replace 'version:\s*', '').Trim()
+          $parts = $full.Split('+')
+          $version = $parts[0]
+          $build = if ($parts.Count -gt 1) { $parts[1] } else { '0' }
+          # Release once per upstream version (not per upstream commit), unless forced.
+          # Tag format v<version>-ha<run> keeps Plezy's own version parser happy.
+          $tags = gh release list --repo $env:GITHUB_REPOSITORY --limit 200 --json tagName --jq '.[].tagName'
+          $already = @($tags | Where-Object { $_ -like "v$version-ha*" }).Count -gt 0
+          $release = ((-not $already) -or ($env:FORCE_BUILD -eq 'true')).ToString().ToLower()
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "build=$build" >> $env:GITHUB_OUTPUT
+          "tag=v$version-ha$($env:GITHUB_RUN_NUMBER)" >> $env:GITHUB_OUTPUT
+          "release=$release" >> $env:GITHUB_OUTPUT
+          Write-Host "version=$version build=$build release=$release (already released: $already)"
+
+      - name: Point in-app updates at this fork
+        if: env.HAS_UPDATER == 'true'
+        shell: pwsh
+        env:
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          # Build-time edits only (never committed), so upstream merges stay clean.
+          $repo = $env:GITHUB_REPOSITORY
+          $feed = "https://raw.githubusercontent.com/$repo/appcast/appcast.xml"
+          $f = 'lib/services/update_service.dart'
+          $s = Get-Content $f -Raw
+          $s = $s -replace "_githubRepo = '[^']*'", "_githubRepo = '$repo'"
+          $s = $s -replace "_feedUrl =\s*'[^']*'", "_feedUrl = '$feed'"
+          Set-Content -Path $f -Value $s -NoNewline
+          if (-not (Select-String -Path $f -Pattern $feed -SimpleMatch -Quiet)) { throw "Could not point update_service.dart at the fork; upstream may have refactored it" }
+
+          $key = $env:SPARKLE_PUBLIC_KEY.Trim()
+          $rc = 'windows/runner/Runner.rc'
+          $r = Get-Content $rc -Raw
+          $r = $r -replace 'EdDSAPub EDDSA \{"[^"]*"\}', ('EdDSAPub EDDSA {"' + $key + '"}')
+          Set-Content -Path $rc -Value $r -NoNewline
+          if (-not (Select-String -Path $rc -Pattern $key -SimpleMatch -Quiet)) { throw "Could not set the update public key in Runner.rc; upstream may have changed it" }
+
+      - name: Cache Windows native dependencies (mpv)
+        uses: actions/cache@v4
+        with:
+          path: build/windows/x64/_deps
+          key: ha-windows-native-x64-${{ hashFiles('windows/CMakeLists.txt', 'mpv-build.lock.json') }}
+
+      # Upstream pins the exact Flutter commit its patched engine needs; using
+      # its own action means this follows upstream's Flutter upgrades.
+      - name: Set up Flutter (upstream's pinned version)
+        uses: ./.github/actions/setup-flutter-git
+
+      # The `jni` plugin's CMake needs a JDK to configure on Windows.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: flutter pub get --enforce-lockfile --no-example
+
+      - name: Home Assistant (Plex Companion) tests
+        shell: pwsh
+        run: flutter test test/services/plex_companion
+
+      - name: Install patched Flutter engine (DComp)
+        shell: pwsh
+        run: |
+          flutter precache --windows
+          .\windows\tool\install-patched-engine.ps1
+
+      - name: Build Windows release
+        shell: pwsh
+        run: |
+          $extra = @()
+          if ($env:HAS_UPDATER -eq 'true') { $extra += '--dart-define=ENABLE_UPDATE_CHECK=true' }
+          flutter build windows --release @extra
+
+      - name: Verify the bundle
+        shell: pwsh
+        run: |
+          $dir = "build/windows/x64/runner/Release"
+          foreach ($f in "plezy.exe", "flutter_windows.dll", "libmpv-2.dll") {
+            if (-not (Test-Path "$dir/$f")) { throw "Missing $f in the bundle" }
+          }
+
+      - name: Package zip
+        shell: pwsh
+        run: Compress-Archive -Path "build/windows/x64/runner/Release/*" -DestinationPath "plezy-ha-windows-x64.zip"
+
+      - name: Build installer and portable archive
+        if: steps.meta.outputs.release == 'true'
+        shell: pwsh
+        run: |
+          .\windows\build-installer.ps1 -X64BuildDir "build/windows/x64/runner/Release" -Version "${{ steps.meta.outputs.version }}"
+          if (-not (Test-Path plezy-windows-installer.exe)) { throw "The installer was not produced" }
+
+      - name: Sign installer for in-app updates
+        if: steps.meta.outputs.release == 'true' && env.HAS_UPDATER == 'true'
+        shell: pwsh
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          $keyPath = Join-Path $env:RUNNER_TEMP "ha-ed25519.pem"
+          try {
+            Set-Content -Path $keyPath -Value $env:SPARKLE_PRIVATE_KEY -Encoding ascii -NoNewline
+            $output = (& dart run auto_updater:sign_update plezy-windows-installer.exe $keyPath) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw "The update signer failed with exit code $LASTEXITCODE" }
+            $sig = [regex]::Match($output, 'edSignature="([^"]*)"')
+            $len = [regex]::Match($output, 'length="(\d+)"')
+            if (-not $sig.Success -or -not $len.Success) { throw "The update signer returned no signature" }
+            Set-Content -Path win-ed-signature.txt -Value $sig.Groups[1].Value -Encoding ascii -NoNewline
+            Set-Content -Path win-installer-size.txt -Value $len.Groups[1].Value -Encoding ascii -NoNewline
+          } finally {
+            Remove-Item -Path $keyPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plezy-ha-windows-x64
+          path: |
+            plezy-ha-windows-x64.zip
+            plezy-windows-installer.exe
+            plezy-windows-x64-portable.7z
+            win-ed-signature.txt
+            win-installer-size.txt
+          if-no-files-found: warn
+
+  build-failed-notice:
+    name: Report build failure
+    needs: build-windows
+    if: ${{ always() && needs.build-windows.result == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open an issue (once)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          title="Build failed after syncing upstream"
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')"
+          if [ -z "$existing" ]; then
+            gh issue create --title "$title" --body "The merged upstream changes (branch auto/sync) failed the tests or the Windows build, so main and the releases were left untouched. Details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
+  publish:
+    name: Publish
+    needs: [sync, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: auto/sync
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: plezy-ha-windows-x64
+          path: dist
+
+      - name: Advance main to the verified build
+        run: git push origin auto/sync:main
+
+      - name: Create release
+        if: needs.build-windows.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build-windows.outputs.version }}
+          TAG: ${{ needs.build-windows.outputs.tag }}
+        run: |
+          files=(dist/plezy-ha-windows-x64.zip)
+          if [ -f dist/plezy-windows-installer.exe ]; then files+=(dist/plezy-windows-installer.exe); fi
+          if [ -f dist/plezy-windows-x64-portable.7z ]; then files+=(dist/plezy-windows-x64-portable.7z); fi
+          gh release create "$TAG" "${files[@]}" \
+            --target "$(git rev-parse HEAD)" \
+            --title "Plezy ${VERSION} + Home Assistant (build ${GITHUB_RUN_NUMBER})" \
+            --notes "Upstream Plezy ${VERSION} with Plex Companion (Home Assistant) support, built automatically from ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}. Install with plezy-windows-installer.exe to receive automatic updates."
+
+      - name: Publish the update feed
+        if: needs.build-windows.outputs.release == 'true'
+        env:
+          VERSION: ${{ needs.build-windows.outputs.version }}
+          BUILD_NUMBER: ${{ needs.build-windows.outputs.build }}
+          TAG: ${{ needs.build-windows.outputs.tag }}
+        run: |
+          if [ ! -f dist/win-ed-signature.txt ]; then
+            echo "No signature produced (update signing not configured); skipping the feed."
+            exit 0
+          fi
+          SIG="$(cat dist/win-ed-signature.txt)"
+          SIZE="$(cat dist/win-installer-size.txt)"
+          cat > appcast.xml << XMLEOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Plezy (Home Assistant fork) Updates</title>
+              <item>
+                <title>Version ${VERSION}</title>
+                <sparkle:version>${BUILD_NUMBER}</sparkle:version>
+                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <enclosure url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/plezy-windows-installer.exe"
+                           length="${SIZE}" type="application/octet-stream"
+                           sparkle:edSignature="${SIG}"
+                           sparkle:installerArguments="/SILENT /SP-"
+                           sparkle:os="windows" />
+              </item>
+            </channel>
+          </rss>
+          XMLEOF
+          sed -i 's/^          //' appcast.xml
+          cat appcast.xml
+
+          # Publish as a one-file orphan branch that the app's feed URL points at.
+          git config user.name "ha-sync[bot]"
+          git config user.email "ha-sync@users.noreply.github.com"
+          BLOB="$(git hash-object -w appcast.xml)"
+          TREE="$(printf "100644 blob %s\tappcast.xml\n" "$BLOB" | git mktree)"
+          COMMIT="$(git commit-tree "$TREE" -m "Update appcast for $TAG")"
+          git push origin "$COMMIT:refs/heads/appcast" --force

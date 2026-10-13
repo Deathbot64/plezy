@@ -78,6 +78,7 @@ import 'video_player_screen.dart';
 import 'profile/profile_teardown.dart';
 import '../services/system_shelf_service.dart';
 import '../watch_together/watch_together.dart';
+import '../services/plex_companion/plex_companion_controller.dart';
 
 /// Provides access to the main screen's focus control.
 // MainScreenFocusScope and SideNavigationBleedBuilder live in
@@ -611,6 +612,9 @@ class _MainScreenState extends State<MainScreen>
         // Ensure first login (or any unset profile state) requires explicit selection.
         await _promptForInitialProfileSelection();
         if (!mounted) return;
+
+        // Start Plex Companion (Home Assistant control) if the user enabled it.
+        unawaited(PlexCompanionController.instance.sync());
 
         // Auto-start companion remote server once the active profile is known.
         if (_companionRemoteSetup) {

@@ -899,6 +899,10 @@ class SettingsService extends BaseSharedPreferencesService {
     'enable_companion_remote_server',
     defaultValueProvider: PlatformDetector.isDesktopOS,
   );
+  /// Lets Plex Companion controllers (Home Assistant's Plex integration, Plex
+  /// apps) discover and control this player on the LAN. Off by default: the
+  /// protocol has no authentication.
+  static const enablePlexCompanion = BoolPref('enable_plex_companion');
   static const startInFullscreen = BoolPref('start_in_fullscreen');
   static const exitFullscreenOnPlayerClose = BoolPref('exit_fullscreen_on_player_close');
 
@@ -1513,6 +1517,7 @@ class SettingsService extends BaseSharedPreferencesService {
     customExternalPlayers,
     customRelayUrl,
     companionRemoteLastHostAddress,
+    enablePlexCompanion,
     rememberedBrightnessLevel,
     refusedVideoCodecs,
   ];

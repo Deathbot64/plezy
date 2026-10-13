@@ -24,6 +24,7 @@ import 'trackers/simkl/simkl_tracker.dart';
 import 'trackers/tracker.dart';
 import 'trackers/tracker_constants.dart';
 import 'trackers/trakt/trakt_tracker.dart';
+import 'plex_companion/plex_companion_controller.dart';
 
 /// Runtime effect of one stored pref. [checkCurrent] must be called after
 /// every await so a profile switch mid-effect aborts the rest.
@@ -95,6 +96,7 @@ class SettingsMutationService {
     ),
     for (final service in TrackerService.values) _scrobbleEffect(service),
     _SettingsEffect(SettingsService.enableCompanionRemoteServer, _applyCompanionRemoteServer),
+    _SettingsEffect(SettingsService.enablePlexCompanion, (_, _, _) => PlexCompanionController.instance.sync()),
     // Home hubs are fetched in the chosen layout, so a switch only shows once
     // they are fetched again. The load runs in the background: the setting is
     // already saved, and the home screen shows its own loading state.
