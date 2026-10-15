@@ -3102,6 +3102,8 @@ class Translations$discover$en {
 		one: '${n} title',
 		other: '${n} titles',
 	);
+
+	late final Translations$discover$person$en person = Translations$discover$person$en.internal(_root);
 }
 
 // Path: errors
@@ -4849,9 +4851,6 @@ class Translations$videoSettings$en {
 
 	/// en: 'Decodes audio to PCM; passthrough is off while this is on'
 	String get audioNormalizationDisablesPassthrough => 'Decodes audio to PCM; passthrough is off while this is on';
-
-	/// en: 'Decodes audio to a stereo mix; passthrough is off while this is on'
-	String get audioNormalizationStereoMix => 'Decodes audio to a stereo mix; passthrough is off while this is on';
 }
 
 // Path: performanceOverlay
@@ -5807,6 +5806,12 @@ class Translations$common$ratingSource$en {
 
 	/// en: 'Rotten Tomatoes audience'
 	String get rottenTomatoesAudience => 'Rotten Tomatoes audience';
+
+	/// en: 'Metacritic'
+	String get metacritic => 'Metacritic';
+
+	/// en: 'Letterboxd'
+	String get letterboxd => 'Letterboxd';
 }
 
 // Path: common.mediaKind
@@ -6110,6 +6115,30 @@ class Translations$accountPreferences$mediaReviewsOptions$en {
 
 	/// en: 'Hidden'
 	String get nobody => 'Hidden';
+}
+
+// Path: discover.person
+class Translations$discover$person$en {
+	Translations$discover$person$en.internal(this._root);
+
+	final Translations _root; // ignore: unused_field
+
+	// Translations
+
+	/// en: 'Born'
+	String get born => 'Born';
+
+	/// en: 'Died'
+	String get died => 'Died';
+
+	/// en: 'Birthplace'
+	String get birthplace => 'Birthplace';
+
+	/// en: '${date} (age ${age})'
+	String dateWithAge({required Object date, required Object age}) => '${date} (age ${age})';
+
+	/// en: '${date} (aged ${age})'
+	String dateWithAgeAtDeath({required Object date, required Object age}) => '${date} (aged ${age})';
 }
 
 // Path: libraries.tabs
@@ -7452,6 +7481,8 @@ extension on Translations {
 			'common.ratingSource.trakt' => 'Trakt',
 			'common.ratingSource.rottenTomatoesCritic' => 'Rotten Tomatoes critics',
 			'common.ratingSource.rottenTomatoesAudience' => 'Rotten Tomatoes audience',
+			'common.ratingSource.metacritic' => 'Metacritic',
+			'common.ratingSource.letterboxd' => 'Letterboxd',
 			'common.notAvailable' => 'N/A',
 			'common.url' => 'URL',
 			'common.letterKeys' => 'ABC',
@@ -7887,10 +7918,10 @@ extension on Translations {
 			'fileInfo.referenceFrames' => 'Reference Frames',
 			'fileInfo.dynamicRange' => 'Dynamic Range',
 			'fileInfo.dolbyVision' => 'Dolby Vision',
-			'fileInfo.dolbyVisionLevel' => 'Dolby Vision Level',
-			'fileInfo.dolbyVisionVersion' => 'Dolby Vision Version',
 			_ => null,
 		} ?? switch (path) {
+			'fileInfo.dolbyVisionLevel' => 'Dolby Vision Level',
+			'fileInfo.dolbyVisionVersion' => 'Dolby Vision Version',
 			'fileInfo.dolbyVisionLayers' => 'Dolby Vision Layers',
 			'fileInfo.baseLayerCompatibility' => 'Base Layer Compatibility',
 			'fileInfo.avcBitstream' => 'AVC Bitstream',
@@ -8387,6 +8418,11 @@ extension on Translations {
 			'discover.minutesLeft' => ({required Object minutes}) => '${minutes} min left',
 			'discover.moreLikeThis' => 'More Like This',
 			'discover.titleCount' => ({required num n}) => (_root.$meta.cardinalResolver ?? PluralResolvers.cardinal('en'))(n, one: '${n} title', other: '${n} titles', ), 
+			'discover.person.born' => 'Born',
+			'discover.person.died' => 'Died',
+			'discover.person.birthplace' => 'Birthplace',
+			'discover.person.dateWithAge' => ({required Object date, required Object age}) => '${date} (age ${age})',
+			'discover.person.dateWithAgeAtDeath' => ({required Object date, required Object age}) => '${date} (aged ${age})',
 			'errors.searchFailed' => ({required Object error}) => 'Search failed: ${error}',
 			'errors.searchUnavailable' => 'Search could not reach any media server.',
 			'errors.connectionTimeout' => ({required Object context}) => 'Connection timeout while loading ${context}',
@@ -8396,6 +8432,8 @@ extension on Translations {
 			'errors.pleaseEnterToken' => 'Please enter a token',
 			'errors.invalidToken' => 'Invalid token',
 			'errors.failedToVerifyToken' => ({required Object error}) => 'Failed to verify token: ${error}',
+			_ => null,
+		} ?? switch (path) {
 			'errors.failedToSwitchProfile' => ({required Object displayName}) => 'Failed to switch to ${displayName}',
 			'errors.failedToDeleteProfile' => ({required Object displayName}) => 'Failed to delete ${displayName}',
 			'errors.failedToRate' => 'Couldn\'t update rating',
@@ -8403,8 +8441,6 @@ extension on Translations {
 			'errors.reasonUnreachable' => 'the server could not be reached',
 			'errors.reasonRefused' => 'the server refused the request',
 			'errors.reasonNotFound' => 'the item is no longer on the server',
-			_ => null,
-		} ?? switch (path) {
 			'errors.reasonServerError' => 'the server reported an error',
 			'errors.reasonCancelled' => 'the request was cancelled',
 			'errors.reasonUnexpected' => 'an unexpected error occurred',
@@ -8910,6 +8946,8 @@ extension on Translations {
 			'watchTogether.youAreHost' => 'You are the host',
 			'watchTogether.makeHost' => 'Make host',
 			'watchTogether.makeHostQuestion' => 'Transfer host?',
+			_ => null,
+		} ?? switch (path) {
 			'watchTogether.makeHostConfirm' => ({required Object name}) => '${name} will control playback and drive the session for everyone.',
 			'watchTogether.transfer' => 'Transfer',
 			'watchTogether.hostChangedTo' => ({required Object name}) => '${name} is now the host',
@@ -8917,8 +8955,6 @@ extension on Translations {
 			'watchTogether.hostTransferFailed' => ({required Object name}) => 'Couldn\'t make ${name} the host',
 			'watchTogether.watchingWithOthers' => 'Watching with others',
 			'watchTogether.endSession' => 'End Session',
-			_ => null,
-		} ?? switch (path) {
 			'watchTogether.leaveSession' => 'Leave Session',
 			'watchTogether.endSessionQuestion' => 'End Session?',
 			'watchTogether.leaveSessionQuestion' => 'Leave Session?',
@@ -9198,7 +9234,6 @@ extension on Translations {
 			'videoSettings.audioOutputStereo' => 'Stereo',
 			'videoSettings.audioNormalization' => 'Normalize Loudness',
 			'videoSettings.audioNormalizationDisablesPassthrough' => 'Decodes audio to PCM; passthrough is off while this is on',
-			'videoSettings.audioNormalizationStereoMix' => 'Decodes audio to a stereo mix; passthrough is off while this is on',
 			'performanceOverlay.color' => 'Color',
 			'performanceOverlay.performance' => 'Performance',
 			'performanceOverlay.buffer' => 'Buffer',
@@ -9425,14 +9460,14 @@ extension on Translations {
 			'services.scrobble' => 'Track progress automatically',
 			'services.scrobbleDescription' => 'Update your list when you finish an episode or movie.',
 			'services.disconnectConfirm' => ({required Object service}) => 'Disconnect ${service}?',
+			_ => null,
+		} ?? switch (path) {
 			'services.disconnectConfirmBody' => ({required Object service}) => 'Plezy will stop updating ${service}. Reconnect any time.',
 			'services.connectFailed' => ({required Object service}) => 'Couldn\'t connect to ${service}. Try again.',
 			'services.names.mal' => 'MyAnimeList',
 			'services.names.anilist' => 'AniList',
 			'services.names.simkl' => 'Simkl',
 			'services.names.seerr' => 'Seerr',
-			_ => null,
-		} ?? switch (path) {
 			'services.names.mdblist' => 'MDBList',
 			'services.simklReconnect.title' => 'Reconnect Simkl',
 			'services.simklReconnect.subtitle' => 'Simkl is retiring the sign-in method this connection uses. Reconnecting opens simkl.com to approve Plezy — Plezy never sees your password. Your watch history stays on Simkl.',
