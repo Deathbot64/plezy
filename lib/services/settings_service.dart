@@ -120,7 +120,7 @@ enum SubAssOverride { no, yes, scale, force, strip }
 
 /// Resolution ASS/image subtitles are rasterized at.
 ///
-/// iOS/tvOS (avfoundation VO) uses the [screen] vs [video] basis (video is much
+/// iOS/tvOS/macOS (avfoundation VO) use the [screen] vs [video] basis (video is much
 /// cheaper on 4K displays; subs can't carry more detail than the video they're
 /// typeset against). Android (libass overlay) instead downscales by a fixed
 /// fraction of the surface — [screen] is full, and [threeQuarter]/[half]/[third]/
@@ -138,7 +138,7 @@ enum HdrToneMapping { compositor, player }
 
 extension SubtitleRenderScale on SubtitleRenderResolution {
   /// Android libass overlay render scale (fraction of the surface resolution).
-  /// Only Android reads this; the iOS-only [video] basis maps to full scale here.
+  /// Only Android reads this; the Apple-only [video] basis maps to full scale here.
   double get androidRenderScale => switch (this) {
     SubtitleRenderResolution.screen => 1.0,
     SubtitleRenderResolution.video => 1.0,
@@ -402,9 +402,10 @@ class _UseExternalPlayerPref extends Pref<bool> {
   Future<void> writeTo(BaseSharedPreferencesService svc, bool value) => svc.writeBool(key, value);
 }
 
-/// Native Dolby playback: bitstreaming on Android TV, Apple's EAC3+JOC
-/// sample-buffer renderer on Apple TV. Both default on for the living-room
-/// form factor, off everywhere else.
+/// Native Dolby playback: bitstreaming on Android TV and desktop, Apple's
+/// system Dolby decoder on Apple platforms. Defaults on for the living-room
+/// form factor; iPhone, iPad, and Mac opt in until that sink is verified on
+/// headphone and speaker routes the way it is on Apple TV receivers.
 class _AudioPassthroughPref extends Pref<bool> {
   const _AudioPassthroughPref() : super('audio_passthrough');
   @override

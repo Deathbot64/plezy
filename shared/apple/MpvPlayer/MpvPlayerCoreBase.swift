@@ -7,7 +7,6 @@ import QuartzCore
   import UIKit
 #elseif os(macOS)
   import Cocoa
-  import Metal
 #endif
 
 struct MpvLifecycleUnavailableError: LocalizedError {
@@ -60,40 +59,7 @@ protocol MpvPlayerDelegate: AnyObject {
   func onEvent(name: String, data: [String: Any]?)
 }
 
-#if os(macOS)
-  // Workaround for MoltenVK problems that cause flicker.
-  // https://github.com/mpv-player/mpv/pull/13651
-  class MpvMetalLayer: CAMetalLayer {
-    override var drawableSize: CGSize {
-      get { super.drawableSize }
-      set {
-        if newValue == .zero || (Int(newValue.width) > 1 && Int(newValue.height) > 1) {
-          super.drawableSize = newValue
-        }
-      }
-    }
-
-    // MoltenVK sets this from libmpv's VO thread when it tags the layer for
-    // the negotiated swapchain colorspace (on for PQ, HLG and Display P3, off
-    // for sRGB and pass-through). The screen only enters EDR mode for a write
-    // made on the main thread, so marshal it there; the colorspace itself
-    // takes effect from any thread.
-    override var wantsExtendedDynamicRangeContent: Bool {
-      get { super.wantsExtendedDynamicRangeContent }
-      set {
-        if Thread.isMainThread {
-          super.wantsExtendedDynamicRangeContent = newValue
-        } else {
-          DispatchQueue.main.async {
-            super.wantsExtendedDynamicRangeContent = newValue
-          }
-        }
-      }
-    }
-  }
-#else
-  class MpvVideoLayer: AVSampleBufferDisplayLayer {}
-#endif
+class MpvVideoLayer: AVSampleBufferDisplayLayer {}
 
 /// Safely convert a C string to Swift String with UTF-8 validation.
 /// Falls back to Latin-1 decoding if the bytes are not valid UTF-8.
@@ -136,11 +102,7 @@ final class MpvWakeupCallbackContext {
 class MpvPlayerCoreBase: NSObject {
   weak var delegate: MpvPlayerDelegate?
 
-  #if os(macOS)
-    var metalLayer: MpvMetalLayer?
-  #else
-    var videoLayer: MpvVideoLayer?
-  #endif
+  var videoLayer: MpvVideoLayer?
   var isInitialized = false
   var isPipActive = false
 
@@ -365,8 +327,6 @@ class MpvPlayerCoreBase: NSObject {
     return body(mpv)
   }
 
-  func configurePlatformMpvOptions(mpv: OpaquePointer) {}
-
   func updateEDRMode(sigPeak: Double) {}
 
   /// Platform hook fed by `scheduleDisplayCriteriaUpdate` with the decoded
@@ -515,12 +475,7 @@ class MpvPlayerCoreBase: NSObject {
   }
 
   func setupMpv() -> Bool {
-    #if os(macOS)
-      guard let renderLayer = metalLayer else { return false }
-      configureMoltenVKPlacementHeaps()
-    #else
-      guard let renderLayer = videoLayer else { return false }
-    #endif
+    guard let renderLayer = videoLayer else { return false }
 
     applyDvConversionModeEnvironment()
 
@@ -528,7 +483,6 @@ class MpvPlayerCoreBase: NSObject {
       var layer = Int64(Int(bitPattern: Unmanaged.passUnretained(renderLayer).toOpaque()))
       checkError(mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &layer))
       applySharedMpvOptions(mpv: mpv)
-      configurePlatformMpvOptions(mpv: mpv)
     }
     guard created else { return false }
 
@@ -587,6 +541,7 @@ class MpvPlayerCoreBase: NSObject {
       checkError(mpv_set_option_string(mpv, "ytdl", "no"))
     #endif
 
+    applyPlatformAudioOutput(mpv: mpv)
     configure(mpv)
 
     let initResult = mpv_initialize(mpv)
@@ -624,6 +579,37 @@ class MpvPlayerCoreBase: NSObject {
     )
     lifecycleLock.unlock()
     return true
+  }
+
+  /// The audio output mpv probes, applied to every context so the video and
+  /// music cores render the same way. Runs before `configure`, so a core can
+  /// still narrow it.
+  private func applyPlatformAudioOutput(mpv: OpaquePointer) {
+    #if os(iOS)
+      // AVFoundation first: ao_audiounit (RemoteIO) sizes its output from the
+      // route's hardware channels, and AirPods report 2 even with Spatial
+      // Audio, so it remixed every 5.1/7.1 source to stereo (#2264).
+      // AVSampleBufferAudioRenderer takes the decoder's full layout, which the
+      // system spatializes on AirPods and multichannel routes, and its AC3/EAC3
+      // sink is the system Dolby decoder that renders Atmos. audiounit stays
+      // as the fallback when the renderer fails to open.
+      checkError(mpv_set_option_string(mpv, "ao", "avfoundation,audiounit"))
+    #elseif os(macOS)
+      // CoreAudio first: PCM plays through the one HAL-backed timing path,
+      // deliberately giving up AVFoundation spatialization of multichannel PCM.
+      // AVFoundation is still reached for two cases: Dolby passthrough, where
+      // CoreAudio redirects the bitstream to coreaudio_exclusive and that
+      // declines on outputs without IEC 61937 substreams, so the AC3/EAC3 lands
+      // on the system decoder (Dolby Atmos on AirPods and built-in speakers,
+      // #2477); and a CoreAudio init that fails outright — macOS 27 beta
+      // rejects ao_coreaudio's channel-layout setup with paramErr (-50), and a
+      // single-entry ao list would turn that into playback with no audio at
+      // all (#1964).
+      checkError(mpv_set_option_string(mpv, "ao", "coreaudio,avfoundation"))
+    #endif
+    // tvOS keeps mpv's default (audiounit, then avfoundation): audiounit drives
+    // HDMI multichannel PCM, and refusing passthrough formats hands AC3/EAC3
+    // to the AVFoundation Dolby sink.
   }
 
   func setLogLevel(_ level: String) {
@@ -813,14 +799,15 @@ class MpvPlayerCoreBase: NSObject {
 
     // On tvOS the toggle only takes effect through the HDMI display-mode path
     // (target-colorspace-hint is inert in the avfoundation VO and EDR is
-    // iOS-only), so re-evaluate the display criteria with the new flag.
+    // iOS/macOS only), so re-evaluate the display criteria with the new flag.
     #if os(tvOS)
       scheduleDisplayCriteriaUpdate()
     #endif
   }
 
-  /// PiP presents the AVSampleBufferDisplayLayer directly, so subtitles must
-  /// be composited into the video samples instead of the inline OSD layer.
+  /// iOS PiP presents the AVSampleBufferDisplayLayer directly, so subtitles
+  /// must be composited into the video samples instead of the inline OSD
+  /// layer. macOS PiP hosts the OSD layer itself and never composites.
   func setPipSubtitleCompositing(_ enabled: Bool) {
     #if os(iOS)
       let value = enabled ? "yes" : "no"
@@ -997,43 +984,24 @@ class MpvPlayerCoreBase: NSObject {
   }
 
   private func applySharedMpvOptions(mpv: OpaquePointer) {
-    #if os(macOS)
-      checkError(mpv_set_option_string(mpv, "vo", "gpu-next"))
-      checkError(mpv_set_option_string(mpv, "gpu-api", "vulkan"))
-      checkError(mpv_set_option_string(mpv, "gpu-context", "moltenvk"))
+    checkError(mpv_set_option_string(mpv, "vo", "avfoundation"))
+    #if targetEnvironment(simulator)
+      checkError(mpv_set_option_string(mpv, "avfoundation-composite-osd", "no"))
+      checkError(mpv_set_option_string(mpv, "hwdec", "no"))
+    #elseif os(tvOS)
+      // tvOS HDR is HDMI mode switching, not EDR — an SDR sibling layer
+      // doesn't dim the video, so skip the per-frame CI composite that
+      // round-trips BT.2020/PQ through linear P3.
+      checkError(mpv_set_option_string(mpv, "avfoundation-composite-osd", "no"))
+      // Host-clock presentation: samples carry mpv's scheduled display
+      // time against a free-running timebase, so audio-clock drift never
+      // accumulates in the VO (#1776). Media-time presentation is only
+      // needed for PiP, which tvOS does not have.
+      checkError(mpv_set_option_string(mpv, "avfoundation-presentation", "host"))
       checkError(mpv_set_option_string(mpv, "hwdec", "videotoolbox"))
-      // The moltenvk context reports the screen as BT.2020 PQ once the layer
-      // carries an EDR headroom above 1 (MpvPlayerCore.publishDisplayHeadroom);
-      // that report is what lets the `auto` hint below engage at all. `source`
-      // hands HDR sources through as PQ/HLG with their own mastering metadata
-      // for WindowServer to map, the way AVFoundation does (#2393), and keeps
-      // SDR sources SDR: on such a screen libplacebo negotiates a Display P3
-      // BT.1886 surface for them, so they come out colour-managed instead of
-      // on the untagged pass-through surface an SDR screen keeps. The default
-      // `target` mode would re-encode SDR to PQ at 203 nits - where macOS then
-      // places that against SDR white is unmeasured - and have mpv tone-map to
-      // a display peak the context does not report.
-      checkError(mpv_set_option_string(mpv, "target-colorspace-hint-mode", "source"))
     #else
-      checkError(mpv_set_option_string(mpv, "vo", "avfoundation"))
-      #if targetEnvironment(simulator)
-        checkError(mpv_set_option_string(mpv, "avfoundation-composite-osd", "no"))
-        checkError(mpv_set_option_string(mpv, "hwdec", "no"))
-      #elseif os(tvOS)
-        // tvOS HDR is HDMI mode switching, not EDR — an SDR sibling layer
-        // doesn't dim the video, so skip the per-frame CI composite that
-        // round-trips BT.2020/PQ through linear P3.
-        checkError(mpv_set_option_string(mpv, "avfoundation-composite-osd", "no"))
-        // Host-clock presentation: samples carry mpv's scheduled display
-        // time against a free-running timebase, so audio-clock drift never
-        // accumulates in the VO (#1776). Media-time presentation is only
-        // needed for PiP, which tvOS does not have.
-        checkError(mpv_set_option_string(mpv, "avfoundation-presentation", "host"))
-        checkError(mpv_set_option_string(mpv, "hwdec", "videotoolbox"))
-      #else
-        checkError(mpv_set_option_string(mpv, "avfoundation-composite-osd", "no"))
-        checkError(mpv_set_option_string(mpv, "hwdec", "videotoolbox"))
-      #endif
+      checkError(mpv_set_option_string(mpv, "avfoundation-composite-osd", "no"))
+      checkError(mpv_set_option_string(mpv, "hwdec", "videotoolbox"))
     #endif
     checkError(mpv_set_option_string(mpv, "hwdec-codecs", "all"))
     checkError(mpv_set_option_string(mpv, "hwdec-software-fallback", "yes"))
@@ -1043,50 +1011,36 @@ class MpvPlayerCoreBase: NSObject {
     checkError(mpv_set_option_string(mpv, "keep-open", "yes"))
   }
 
-  #if os(macOS)
-    private func configureMoltenVKPlacementHeaps() {
-      guard let device = MTLCreateSystemDefaultDevice() else { return }
-      let supportsPlacementHeaps = device.supportsFamily(.apple2) || device.supportsFamily(.mac2)
-      if !supportsPlacementHeaps {
-        setenv("MVK_CONFIG_USE_MTLHEAP", "0", 1)
-      }
-    }
-  #endif
-
   private func isManagedRendererProperty(_ name: String) -> Bool {
     name == "vo" || name == "wid" || name == "gpu-api" || name == "gpu-context"
       || name == "avfoundation-composite-osd" || name == "avfoundation-pip-composite-osd"
   }
 
   private func updateVideoGravityIfNeeded(name: String, value: String) {
-    #if os(macOS)
-      return
-    #else
-      let gravity: AVLayerVideoGravity
-      cacheLock.lock()
-      switch name {
-      case "panscan":
-        currentPanscan = Double(value) ?? 0
-      case "video-aspect-override":
-        aspectOverrideActive = value != "no" && value != "-1" && value != "0"
-      default:
-        cacheLock.unlock()
-        return
-      }
-
-      if aspectOverrideActive {
-        gravity = .resize
-      } else if currentPanscan > 0 {
-        gravity = .resizeAspectFill
-      } else {
-        gravity = .resizeAspect
-      }
+    let gravity: AVLayerVideoGravity
+    cacheLock.lock()
+    switch name {
+    case "panscan":
+      currentPanscan = Double(value) ?? 0
+    case "video-aspect-override":
+      aspectOverrideActive = value != "no" && value != "-1" && value != "0"
+    default:
       cacheLock.unlock()
+      return
+    }
 
-      DispatchQueue.main.async { [weak self] in
-        self?.videoLayer?.videoGravity = gravity
-      }
-    #endif
+    if aspectOverrideActive {
+      gravity = .resize
+    } else if currentPanscan > 0 {
+      gravity = .resizeAspectFill
+    } else {
+      gravity = .resizeAspect
+    }
+    cacheLock.unlock()
+
+    DispatchQueue.main.async { [weak self] in
+      self?.videoLayer?.videoGravity = gravity
+    }
   }
 
   private func completeOnMain(_ completion: @escaping () -> Void) {
