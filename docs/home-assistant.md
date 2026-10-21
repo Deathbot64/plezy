@@ -171,6 +171,20 @@ The same code runs on Android. Differences to know:
   `adb shell getprop ro.product.cpu.abi`.
 - No firewall setup is needed on Android. The player must be on the same
   network as Home Assistant.
+- **Shows as "unavailable" when idle, and is missing from the server's player
+  list.** Home Assistant then only knows the player from an active playback
+  session, so Plezy's announcement is not reaching your Plex server. In Plezy's
+  log (Settings > View Logs) look for `GDM: announcing from 192.168.x.x (wlan0)`.
+  Plezy sends from your Wi-Fi/Ethernet address only, never mobile data. If the
+  log says `no Wi-Fi/Ethernet address found`, the device is not on your home
+  Wi-Fi. If it names the right address and Home Assistant still cannot see the
+  player, check that the Plex server has *Enable local network discovery (GDM)*
+  turned on (Plex > Settings > Network) and is on the same network (a Docker
+  server in bridge mode never receives the announcement).
+- Android 17 blocks local-network traffic for apps built for Android 17 or newer
+  unless they ask for a new permission. Plezy is currently built for an older
+  Android version, so this does not apply yet, but it may after Plezy raises its
+  target version.
 - Sign every build with the same key (see FORK-SETUP / the Android steps).
   Android refuses to update an app over a copy signed with a different key; you
   would have to uninstall first, which signs you out.
