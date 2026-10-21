@@ -13,7 +13,7 @@ void main() {
   group('GDM', () {
     test('every header line has exactly one colon (python-plexapi unpacks line.split(":") into two)', () {
       final reply = buildGdmSearchResponse(_info, 32500);
-      final lines = reply.split('\r\n').where((l) => l.contains(':'));
+      final lines = reply.split('\n').where((l) => l.contains(':'));
       expect(lines, isNotEmpty);
       for (final line in lines) {
         expect(':'.allMatches(line).length, 1, reason: line);
@@ -23,15 +23,30 @@ void main() {
     test('reply fits one 1024 byte datagram and carries the identity', () {
       final reply = buildGdmSearchResponse(_info, 32500);
       expect(reply.length, lessThan(1024));
-      expect(reply, startsWith('HTTP/1.0 200 OK\r\n'));
-      expect(reply, contains('Resource-Identifier: ${_info.identifier}\r\n'));
-      expect(reply, contains('Port: 32500\r\n'));
-      expect(reply, contains('Protocol-Capabilities: timeline,playback,navigation\r\n'));
+      expect(reply, startsWith('HTTP/1.0 200 OK\n'));
+      expect(reply, contains('Resource-Identifier: ${_info.identifier}\n'));
+      expect(reply, contains('Port: 32500\n'));
+      expect(reply, contains('Protocol-Capabilities: timeline,playback,navigation\n'));
+    });
+
+    test('uses plain newlines with no trailing newline (the layout plex-mpv-shim uses)', () {
+      for (final message in [
+        buildGdmSearchResponse(_info, 1),
+        buildGdmHello(_info, 1),
+        buildGdmBye(_info, 1),
+      ]) {
+        expect(message.contains('\r'), isFalse);
+        expect(message.endsWith('\n'), isFalse);
+      }
+    });
+
+    test('carries RawName like plex-mpv-shim', () {
+      expect(buildGdmHello(_info, 1), contains('RawName: Gaming PC- Living "Room"\n'));
     });
 
     test('hello and bye use the registration verbs', () {
-      expect(buildGdmHello(_info, 1), startsWith('HELLO * HTTP/1.0\r\n'));
-      expect(buildGdmBye(_info, 1), startsWith('BYE * HTTP/1.0\r\n'));
+      expect(buildGdmHello(_info, 1), startsWith('HELLO * HTTP/1.0\n'));
+      expect(buildGdmBye(_info, 1), startsWith('BYE * HTTP/1.0\n'));
     });
 
     test('recognises searches only', () {

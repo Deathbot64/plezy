@@ -36,6 +36,7 @@ class PlexCompanionServer {
   HttpClient? _pushClient;
   Timer? _ticker;
   final Map<String, _Subscriber> _subscribers = {};
+  final Map<String, DateTime> _lastRequestLog = {};
 
   bool get isRunning => _http != null;
 
@@ -73,6 +74,7 @@ class PlexCompanionServer {
   // -------------------------------------------------------------------------
 
   Future<void> _onRequest(HttpRequest req) async {
+    _noteRequest(req);
     final res = req.response;
     res.headers
       ..set('X-Plex-Client-Identifier', info.identifier)
@@ -113,6 +115,18 @@ class PlexCompanionServer {
     } catch (_) {
       // Controller hung up; nothing to do.
     }
+  }
+
+  /// Logs the first request from each controller (then at most every 10
+  /// minutes), so the log shows whether Home Assistant's connection arrives.
+  void _noteRequest(HttpRequest req) {
+    final from = req.connectionInfo?.remoteAddress.address;
+    if (from == null) return;
+    final now = DateTime.now();
+    final last = _lastRequestLog[from];
+    if (last != null && now.difference(last) < const Duration(minutes: 10)) return;
+    _lastRequestLog[from] = now;
+    _log('Companion: control request from $from (${req.method} ${req.uri.path})');
   }
 
   Future<String> _route(HttpRequest req) async {

@@ -104,6 +104,7 @@ List<MapEntry<String, String>> _gdmHeaders(PlexCompanionDeviceInfo info, int por
   const MapEntry('Content-Type', 'plex/media-player'),
   MapEntry('Resource-Identifier', sanitizeGdmValue(info.identifier)),
   MapEntry('Name', sanitizeGdmValue(info.name)),
+  MapEntry('RawName', sanitizeGdmValue(info.name)),
   MapEntry('Port', '$port'),
   MapEntry('Product', sanitizeGdmValue(info.product)),
   MapEntry('Version', sanitizeGdmValue(info.version)),
@@ -113,19 +114,23 @@ List<MapEntry<String, String>> _gdmHeaders(PlexCompanionDeviceInfo info, int por
   MapEntry('Device-Class', sanitizeGdmValue(info.deviceClass)),
 ];
 
+/// Header lines separated by plain `\n` with no trailing newline: the layout of
+/// python plex-mpv-shim, a player Plex Media Server and python-plexapi are
+/// known to accept. (An earlier version used `\r\n`; if a server kept the `\r`
+/// as part of the identifier it would never match the player's sessions.)
 String _gdmBody(PlexCompanionDeviceInfo info, int port) =>
-    _gdmHeaders(info, port).map((e) => '${e.key}: ${e.value}\r\n').join();
+    _gdmHeaders(info, port).map((e) => '${e.key}: ${e.value}').join('\n');
 
 /// Unicast answer to an `M-SEARCH`. Must fit one 1024-byte datagram: that is
 /// all python-plexapi reads.
 String buildGdmSearchResponse(PlexCompanionDeviceInfo info, int port) =>
-    'HTTP/1.0 200 OK\r\n${_gdmBody(info, port)}';
+    'HTTP/1.0 200 OK\n${_gdmBody(info, port)}';
 
 /// Registration announcement Plex Media Server turns into a `/clients` entry.
-String buildGdmHello(PlexCompanionDeviceInfo info, int port) => 'HELLO * HTTP/1.0\r\n${_gdmBody(info, port)}';
+String buildGdmHello(PlexCompanionDeviceInfo info, int port) => 'HELLO * HTTP/1.0\n${_gdmBody(info, port)}';
 
 /// De-registration sent on shutdown.
-String buildGdmBye(PlexCompanionDeviceInfo info, int port) => 'BYE * HTTP/1.0\r\n${_gdmBody(info, port)}';
+String buildGdmBye(PlexCompanionDeviceInfo info, int port) => 'BYE * HTTP/1.0\n${_gdmBody(info, port)}';
 
 /// Whether a received datagram is a player search (`M-SEARCH * HTTP/1.0|1.1`).
 bool isGdmSearch(String packet) => packet.trimLeft().startsWith('M-SEARCH * HTTP/1.');

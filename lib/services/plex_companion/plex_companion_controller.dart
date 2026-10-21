@@ -111,6 +111,7 @@ class PlexCompanionController {
       );
 
       void log(String message) => appLogger.i(message);
+      log('PlexCompanion: this computer\'s IPv4 addresses: ${await _describeLocalAddresses()}');
       final server = PlexCompanionServer(host: _AppHost(), info: info, log: log);
       final port = await server.start();
       final gdm = PlexCompanionGdm(info: info, httpPort: port, log: log);
@@ -122,6 +123,21 @@ class PlexCompanionController {
     } catch (e, st) {
       appLogger.e('PlexCompanion: failed to start', error: e, stackTrace: st);
       await stop();
+    }
+  }
+
+  /// "192.168.1.50 (Ethernet), 172.25.0.1 (vEthernet (WSL))" - shows at a glance
+  /// when a computer has several network adapters.
+  Future<String> _describeLocalAddresses() async {
+    try {
+      final adapters = await NetworkInterface.list(type: InternetAddressType.IPv4, includeLoopback: false);
+      final parts = <String>[
+        for (final adapter in adapters)
+          for (final address in adapter.addresses) '${address.address} (${adapter.name})',
+      ];
+      return parts.isEmpty ? 'none found' : parts.join(', ');
+    } catch (e) {
+      return 'unknown ($e)';
     }
   }
 
