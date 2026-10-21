@@ -133,7 +133,8 @@ import '../focus/key_event_utils.dart';
 import '../focus/transport_keys.dart';
 import '../i18n/strings.g.dart';
 import '../watch_together/providers/watch_together_provider.dart';
-import '../watch_together/services/watch_together_controller.dart';
+import '../watch_together/models/watch_copy.dart';
+import '../watch_together/services/player_adapter.dart';
 import '../utils/error_message_utils.dart';
 
 part 'video_player/parts/companion_remote.dart';
@@ -482,7 +483,10 @@ class VideoPlayerScreen extends StatefulWidget {
   /// explicit user selections.
   final String? preferredVersionSignature;
   final bool isOffline;
-  final WatchPlaybackLease? watchTogetherLease;
+
+  /// The Watch Together room's file this launch opens, when the room asked
+  /// for it.
+  final WatchCopy? watchTogetherCopy;
   final Duration? initialPosition;
   final bool strictMediaSelection;
   final bool Function()? isLaunchCurrent;
@@ -516,7 +520,7 @@ class VideoPlayerScreen extends StatefulWidget {
     this.selectedQualityPreset,
     this.selectedAudioStreamId,
     this.live,
-    this.watchTogetherLease,
+    this.watchTogetherCopy,
     this.initialPosition,
     this.strictMediaSelection = false,
     this.isLaunchCurrent,
@@ -708,8 +712,6 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
       await _nativeDisposal;
       return true;
     }
-    // Do not bypass Watch Together's leave-session confirmation.
-    if (_watchTogetherProvider?.isInSession == true && !_watchTogetherProvider!.isHost) return false;
     final route = ModalRoute.of(context);
     if (route == null || !route.isCurrent || !Navigator.of(context).canPop()) return false;
     await _exitPlayerRoute(navigateHome: false, stop: true);
@@ -732,10 +734,6 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   int _pendingSubtitleCycleCount = 0;
   bool _subtitleCycleDrainActive = false;
-
-  /// Media key of the last Watch Together switch failure the user was
-  /// toasted about — the heartbeat retry loop must not re-toast every 2s.
-  String? _wtSwitchToastShownForKey;
 
   late int _effectiveSelectedMediaIndex;
 
@@ -1003,13 +1001,17 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
   bool _isPinchZooming = false;
   bool _pinchZoomChanged = false;
   WatchTogetherProvider? _watchTogetherProvider;
-  Object? _watchTogetherBinding;
-  WatchPlaybackLease? _watchTogetherLease;
 
-  /// The one instance registered as the provider's player media-switch
-  /// owner. Every tear-off of an extension method is a new closure that never
-  /// compares equal, so detach identifies its own registration by this field.
-  late final MediaSwitchCallback _watchTogetherMediaSwitchHandler = _handlePlayerMediaSwitch;
+  /// The room's view of the file the player has open; see
+  /// [_VideoPlayerWatchTogetherMethods._bindWatchTogether].
+  PlezyPlayerAdapter? _wtAdapter;
+
+  /// The open under way is the room's file, which the room asked for.
+  bool _wtRoomOpen = false;
+
+  /// Completes once the room no longer commands the player: dispose of the
+  /// player after it.
+  Future<void>? _wtReleased;
   int _userRateOperation = 0;
   Future<void> _userRateMutation = Future<void>.value();
   Completer<void>? _nativeSeekDrain;
@@ -1031,7 +1033,8 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
   );
 
   /// Exposes this player to Plex Companion controllers (Home Assistant, Plex
-  /// apps). Attached with [_companionRemote] and released with it.
+  /// apps). Attached when playback starts; the bridge holds it weakly, so nothing
+  /// needs to release it.
   late final PlexCompanionBinding _plexCompanion = PlexCompanionBinding(
     player: () => player,
     isMounted: () => mounted,
@@ -1080,9 +1083,9 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   /// Whether a downloaded copy may stand in for a capped
   /// [_selectedQualityPreset] (issue #2466). Only the saved startup default
-  /// yields; a picked quality is honored. Watch Together keeps the preset's
-  /// source because a local session does not sync with the room.
-  bool get _downloadOutranksQuality => !_qualityPresetExplicit && _activeWatchTogetherSession() == null;
+  /// yields; a picked quality is honored. In a Watch Together room the player
+  /// streams instead (see [PlaybackSourceResolver.resolve]'s `streamOnly`).
+  bool get _downloadOutranksQuality => !_qualityPresetExplicit;
 
   /// Atomically publish a freshly opened [PlaybackSession] and refine the
   /// selection-intent fields from what the backend actually delivered
@@ -1251,9 +1254,10 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
   PlayerChromeController get chromeController => _chromeController;
 
   @visibleForTesting
-  void debugBindWatchTogetherForTesting() {
-    _attachToWatchTogetherSession(lease: widget.watchTogetherLease!);
-  }
+  void debugBindWatchTogetherForTesting() => _bindWatchTogether();
+
+  @visibleForTesting
+  PlezyPlayerAdapter? get debugWatchTogetherAdapter => _wtAdapter;
 
   /// The Windows display-switch hold otherwise runs only behind a real
   /// display-mode change on entering fullscreen.
@@ -1357,24 +1361,29 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
   @override
   void initState() {
     super.initState();
-    PlaybackCoordinator.instance.registerVideoSession(shutdown: _shutdownVideo, stopAndExit: _stopVideoAndExit);
+    PlaybackCoordinator.instance.registerVideoSession(
+      shutdown: _shutdownVideo,
+      stopAndExit: _stopVideoAndExit,
+      playerState: () => player?.state,
+    );
     SleepTimerService().bindPlayback(
       owner: this,
       onComplete: () {
         final currentPlayer = player;
         if (mounted && !_shuttingDown && currentPlayer != null) {
-          unawaited(_pauseWithPlaybackIntent(currentPlayer));
+          _dispatchPlaybackIntent(_pauseWithPlaybackIntent(currentPlayer), source: 'Sleep timer');
         }
       },
     );
-    final launchLease = widget.watchTogetherLease;
-    if (launchLease != null) {
-      final watchTogether = context.read<WatchTogetherProvider?>();
-      if (watchTogether != null && watchTogether.isPlaybackLeaseCurrent(launchLease)) {
-        _watchTogetherProvider = watchTogether;
-        _watchTogetherLease = launchLease;
-        watchTogether.onPlayerMediaSwitched = _watchTogetherMediaSwitchHandler;
+    if (!widget.isOffline && !widget.isLive) {
+      try {
+        _watchTogetherProvider = context.read<WatchTogetherProvider?>();
+      } catch (_) {
+        // Watch Together lives in the profile session; a player outside it
+        // (tests, the offline shell) plays on its own.
       }
+      _wtRoomOpen = widget.watchTogetherCopy != null;
+      _registerWithWatchTogether();
     }
     unawaited(AndroidExitDiagnostics.markUiState(AndroidUiState.player));
 
@@ -1527,25 +1536,13 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// is coming, because the activity never left the foreground. The playback gate
   /// keeps this paused until the vehicle releases it.
   void _handleCarRestrictionsChanged() {
-    if (!mounted || automotivePlaybackAllowedNow()) return;
+    if (!mounted) return;
+    if (automotivePlaybackAllowedNow()) {
+      // The room catches the player up, if it stopped waiting for this user.
+      _watchTogetherProvider?.setVehicleRestricted(false);
+      return;
+    }
     _enqueueLifecycleTransition('restricted_automotive', _pauseForVehicleRestriction);
-  }
-
-  /// Pauses for something the environment forced on this peer alone.
-  ///
-  /// A guest's pause goes to the Watch Together attachment, which records it as its own command so
-  /// the resulting event is consumed as an acknowledgement rather than a user intent that would
-  /// pause the whole room. A host is refused there and pauses the ordinary way: it is the room's
-  /// clock, and a room whose host cannot play has to pause with it.
-  ///
-  /// Returns whether the sync layer took ownership. When it did, it also owns the resume — through
-  /// the attachment, following the room — so the caller must not restore playback itself: doing so
-  /// would publish a play request and, in a room anyone can control, restart everybody.
-  Future<bool> _pauseWithoutDisturbingTheRoom(Player currentPlayer) async {
-    final syncOwnsIt = await (_watchTogetherProvider?.pauseLocallyForSystem() ?? Future.value(false));
-    if (syncOwnsIt) return true;
-    await _pauseWithPlaybackIntent(currentPlayer);
-    return false;
   }
 
   Future<void> _pauseForVehicleRestriction() async {
@@ -1798,6 +1795,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
           ),
           offlineLibraryMode: false,
           downloadOutranksQuality: _downloadOutranksQuality,
+          streamOnly: _watchTogetherRoom() != null,
         );
         // If MPV setup below throws before `_startPlayback` awaits this,
         // tell Dart we've "handled" the future so it's not reported as an
@@ -2289,7 +2287,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// The returned future completes once navigation has been attempted. Accept
   /// once: the entry guard below only admits an exit that can remove its own
   /// route, and [_removePlayerRoute] removes it whatever ends up on top (#2290).
-  Future<void> _exitPlayerRoute({required bool navigateHome, bool stop = false, WatchTogetherProvider? leaveSession}) {
+  Future<void> _exitPlayerRoute({required bool navigateHome, bool stop = false}) {
     final existing = _routeExitOperation;
     if (existing != null) return existing;
     if (!mounted) return Future<void>.value();
@@ -2304,16 +2302,6 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     final deadline = Timer(_routeExitNavigationBudget, navigationReady.complete);
     final cleanup = Future<void>.sync(() => _shutdownVideo(pauseForRouteExit: !stop));
     final restore = Future<void>.sync(_restoreSystemUiAndOrientation);
-    // leaveSession synchronously detaches the local room before its first
-    // transport await. Confirmation is unbounded; relay teardown is not a
-    // navigation prerequisite.
-    if (leaveSession != null) {
-      unawaited(
-        leaveSession.leaveSession().catchError((Object error, StackTrace stackTrace) {
-          appLogger.e('WatchTogether: Session leave failed', error: error, stackTrace: stackTrace);
-        }),
-      );
-    }
     unawaited(() async {
       try {
         await Future.wait<void>([cleanup, restore]);
@@ -2336,8 +2324,9 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     return completer.future;
   }
 
-  /// Handle back button press
-  /// For non-host participants in Watch Together, shows leave session confirmation
+  /// Handle back button press. In a Watch Together room this leaves the
+  /// player, not the room: the room stops waiting for this user, and a host's
+  /// media stops for everyone.
   Future<void> _handleBackButton({bool navigateHome = false}) async {
     final acceptedExit = _routeExitOperation;
     if (acceptedExit != null) return acceptedExit;
@@ -2348,23 +2337,6 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (_isHandlingBack) return;
     _isHandlingBack = true;
     try {
-      // For non-host participants, show leave session confirmation
-      if (_watchTogetherProvider != null && _watchTogetherProvider!.isInSession && !_watchTogetherProvider!.isHost) {
-        final confirmed = await showConfirmDialog(
-          context,
-          title: t.watchTogether.leaveSessionQuestion,
-          message: t.watchTogether.leaveSessionConfirm,
-          confirmText: t.watchTogether.leave,
-          isDestructive: true,
-        );
-
-        if (confirmed && mounted) {
-          await _exitPlayerRoute(navigateHome: navigateHome, leaveSession: _watchTogetherProvider);
-        }
-        return;
-      }
-
-      // Default behavior for hosts or non-session users
       if (!mounted) return;
       await _exitPlayerRoute(navigateHome: navigateHome);
     } finally {
@@ -2461,13 +2433,13 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     _transitionGate.completeIdleWaiters();
 
     _companionRemote.unbind();
-    PlexCompanionBridge.instance.detach(this);
 
     final isReplacingWithVideo = _isReplacingWithVideo;
-    final successorLease = _videoPlayerRoute?.replacementWatchTogetherLease;
-    final continuesWatchTogether =
-        successorLease != null && _watchTogetherProvider?.isPlaybackLeaseCurrent(successorLease) == true;
-    _detachFromWatchTogetherSession(exiting: !continuesWatchTogether);
+    // A player taking over in the room (the next episode, the room's next
+    // file) keeps a host's media until it shares its own.
+    final watchTogetherReleased = _releaseWatchTogether(
+      continuing: _videoPlayerRoute?.replacedByWatchTogetherPlayer ?? false,
+    );
 
     // Snapshot while reporting readiness and the committed tracker still
     // belong to this route. The coalesced report owns its asynchronous work
@@ -2602,7 +2574,10 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (playerToDispose != null) {
       // Keep the native display mode (tvOS HDMI criteria) across a
       // player→player handoff; the replacement screen primes its own.
-      _nativeDisposal = playerToDispose.dispose(preserveDisplayMode: isReplacingWithVideo);
+      // Not before the room's commands on it have finished (SDK.md §11.2).
+      _nativeDisposal = watchTogetherReleased
+          .timeout(const Duration(seconds: 2), onTimeout: () {})
+          .then((_) => playerToDispose.dispose(preserveDisplayMode: isReplacingWithVideo));
     }
     if (_activeRouteGuard.clear(this)) {
       unawaited(AndroidExitDiagnostics.markUiState(AndroidUiState.mainScreen));
@@ -2728,11 +2703,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
         await _mediaControls.seekBackForRewind(currentPlayer);
         if (!mounted || player != currentPlayer) return;
       }
-      await switch (command) {
-        TransportCommand.play => _playWithPlaybackIntent(currentPlayer),
-        TransportCommand.pause => _pauseWithPlaybackIntent(currentPlayer),
-        TransportCommand.toggle => _playOrPauseWithPlaybackIntent(currentPlayer),
-      };
+      await _transportIntent(currentPlayer, command);
       _announceTransportCommand(willPlay: _playbackIntentShouldPlay);
     } catch (e, st) {
       appLogger.w('$source play/pause failed', error: e, stackTrace: st);
@@ -2746,11 +2717,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     final currentPlayer = player;
     if (currentPlayer == null) return;
     try {
-      await switch (command) {
-        TransportCommand.play => _playWithPlaybackIntent(currentPlayer),
-        TransportCommand.pause => _pauseWithPlaybackIntent(currentPlayer),
-        TransportCommand.toggle => _playOrPauseWithPlaybackIntent(currentPlayer),
-      };
+      await _transportIntent(currentPlayer, command);
       _announceTransportCommand(willPlay: _playbackIntentShouldPlay);
     } catch (e, st) {
       // Same tolerance as _remoteTransport above: a transport tap races
@@ -2973,8 +2940,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     _stopLiveTimelineUpdates();
     _progressTracker?.stopTracking();
     _companionRemote.unbind();
-    PlexCompanionBridge.instance.detach(this);
-    _detachFromWatchTogetherSession(exiting: true);
+    unawaited(_releaseWatchTogether(continuing: false));
     _detachPipStateListener();
     _clearAutoPipEnteringCallback();
     final cancellations = _cancelPlayerStreamSubscriptions(includeMediaControls: true);
