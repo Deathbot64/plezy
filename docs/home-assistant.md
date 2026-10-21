@@ -9,9 +9,10 @@ on the same LAN.
 
 ## 1. Enable it in Plezy
 
-Settings → Controls → **Plex Companion (Home Assistant)**. It is off by default
-because Plex Companion has no authentication: while it is on, any device on
-your network can control Plezy.
+Settings → **Home Assistant** → **Plex Companion (Home Assistant)**. It is off by
+default because Plex Companion has no authentication: while it is on, any
+device on your network can control Plezy. The switch appears on Windows,
+macOS, Linux and Android (phones and TVs); it is not available on iOS.
 
 ## 2. Allow it through Windows Firewall
 
@@ -154,6 +155,25 @@ Settings > System > Logs > *Show raw logs* and look for these lines:
 | Found, but `/resources` fails | TCP 32500 blocked (or Plezy chose another port: log says "using a free port") |
 | Entity appears but `play_media` errors 404 | Plezy is not signed in to the server HA is using |
 | Plex Media Server runs on the *same* PC | both want UDP 32412. Plezy keeps retrying to bind it every minute; the log says so |
+
+## Android (phones and Android TV)
+
+The same code runs on Android. Differences to know:
+
+- **Plezy has to be running.** Android pauses or stops apps that are not on
+  screen, and Home Assistant can only find Plezy while the app is alive. On a
+  TV that means leaving Plezy open (or pressing Home only briefly). If Home
+  Assistant loses the player after a while, that is Android stopping the app.
+- **Install the APK** from your fork's Releases page
+  (`plezy-ha-android-arm64-v8a.apk` for most phones and TVs;
+  `plezy-ha-android-armeabi-v7a.apk` for older 32-bit devices such as the
+  Fire TV Stick Lite and older). Find out which one you need with
+  `adb shell getprop ro.product.cpu.abi`.
+- No firewall setup is needed on Android. The player must be on the same
+  network as Home Assistant.
+- Sign every build with the same key (see FORK-SETUP / the Android steps).
+  Android refuses to update an app over a copy signed with a different key; you
+  would have to uninstall first, which signs you out.
 
 ## Limits
 

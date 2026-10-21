@@ -16,25 +16,32 @@ import 'plex_companion_types.dart';
 
 /// Where the video player screen publishes itself so the Companion server can
 /// read its timeline and drive it. At most one player is on screen.
+///
+/// The player is held weakly. A screen that has been closed is never kept alive
+/// by this class, and its binding reports "stopped" and ignores commands once it
+/// is unmounted, so the video player does not need to call [detach] when it is
+/// disposed. (Keeping the video player's own edits to a minimum matters: that
+/// file changes often upstream, and every extra line risks a merge conflict.)
 class PlexCompanionBridge {
   PlexCompanionBridge._();
 
   static final PlexCompanionBridge instance = PlexCompanionBridge._();
 
-  Object? _owner;
-  PlexCompanionPlayerControls? _controls;
+  WeakReference<Object>? _owner;
+  WeakReference<PlexCompanionPlayerControls>? _controls;
 
-  PlexCompanionPlayerControls? get activePlayer => _controls;
+  PlexCompanionPlayerControls? get activePlayer => _controls?.target;
 
+  /// The newest player wins.
   void attach(Object owner, PlexCompanionPlayerControls controls) {
-    _owner = owner;
-    _controls = controls;
+    _owner = WeakReference<Object>(owner);
+    _controls = WeakReference<PlexCompanionPlayerControls>(controls);
   }
 
-  /// Only the current owner can detach, so a replaced screen disposing late
-  /// cannot unregister its successor.
+  /// Optional cleanup. Only the current owner can detach, so a replaced screen
+  /// disposing late cannot unregister its successor.
   void detach(Object owner) {
-    if (!identical(_owner, owner)) return;
+    if (!identical(_owner?.target, owner)) return;
     _owner = null;
     _controls = null;
   }

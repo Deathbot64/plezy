@@ -148,11 +148,17 @@ jobs:
           done
           gh release upload "$TAG" plezy-ha-android-arm64-v8a.apk plezy-ha-android-armeabi-v7a.apk --clobber
 
-      - name: Report a failure (once)
+      - name: Report a failure
         if: failure()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           title="Android build failed"
-          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')"
+          body="The Android APK build failed. Details: ${RUN_URL}"
+          echo "::error title=${title}::${body}"
+          { echo "### ${title}"; echo; echo "${body}"; } >> "$GITHUB_STEP_SUMMARY"
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number' 2>/dev/null || true)"
           if [ -z "$existing" ]; then
-            gh issue create --title "$title" --body "The Android APK build failed. Details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            gh issue create --title "$title" --body "$body" 2>/dev/null \
+              || echo "Could not open an issue (Issues may be disabled on this fork). The details are in this run's summary."
           fi

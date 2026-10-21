@@ -68,12 +68,40 @@ jobs:
           fi
 
           git checkout -B auto/sync
+          merged=false
           if git merge --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+            merged=true
+          else
+            conflicted="$(git diff --name-only --diff-filter=U)"
+            echo "Conflicting files: ${conflicted}"
+
+            # The video player is edited constantly upstream and carries three small
+            # Home Assistant hooks. If it is the ONLY conflict, take upstream's version
+            # of the file and re-apply the hooks from the saved patch.
+            hooked="lib/screens/video_player_screen.dart"
+            hook_patch=".github/ha/video_player_hook.patch"
+            if [ "$conflicted" = "$hooked" ] && [ -f "$hook_patch" ]; then
+              echo "Re-applying the Home Assistant hooks on top of upstream's ${hooked}"
+              git checkout --theirs -- "$hooked"
+              if patch -p1 --forward --fuzz=3 --no-backup-if-mismatch < "$hook_patch" \
+                 && grep -q "PlexCompanionBridge.instance.attach" "$hooked" \
+                 && grep -q "plex_companion_binding.dart" "$hooked"; then
+                git add -- "$hooked"
+                git commit --no-edit
+                merged=true
+                echo "Conflict resolved automatically."
+              else
+                echo "The hooks did not apply cleanly; leaving this for manual resolution."
+              fi
+            fi
+          fi
+
+          if [ "$merged" = "true" ]; then
             git push --force origin auto/sync
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "conflict=false" >> "$GITHUB_OUTPUT"
           else
-            git merge --abort
+            git merge --abort || true
             echo "Merge conflict with upstream."
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "conflict=true" >> "$GITHUB_OUTPUT"
@@ -85,16 +113,28 @@ jobs:
     if: needs.sync.outputs.conflict == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Open an issue (once)
+      - name: Report the conflict
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           title="Upstream sync needs manual conflict resolution"
-          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')"
+          body="Merging ${UPSTREAM_REPO} into this fork conflicts with the Home Assistant changes, so nothing was updated. In your fork folder run: git pull, then git remote add upstream https://github.com/${UPSTREAM_REPO}.git (ignore an already-exists error), git fetch upstream, git merge upstream/main. Git lists the conflicting files. Fix them, commit, push, and re-run this workflow. Run: ${RUN_URL}"
+          echo "::error title=${title}::${body}"
+          {
+            echo "### ${title}"
+            echo
+            echo "${body}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Issues are switched off on forks by default (Settings > General > Features).
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number' 2>/dev/null || true)"
           if [ -z "$existing" ]; then
-            gh issue create --title "$title" --body "Merging ${UPSTREAM_REPO} into this fork conflicts with the Home Assistant changes, so nothing was updated. Run: git fetch upstream && git merge upstream/main, resolve the conflicts (they will be in the plex_companion hooks), push, then re-run this workflow. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            gh issue create --title "$title" --body "$body" 2>/dev/null \
+              || echo "Could not open an issue (Issues may be disabled on this fork). The details are in this run's summary."
           fi
+          # Leave the run red so the problem is noticed.
+          exit 1
 
   build-windows:
     name: Test and build Windows
@@ -254,16 +294,26 @@ jobs:
     if: ${{ always() && needs.build-windows.result == 'failure' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Open an issue (once)
+      - name: Report the failure
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           title="Build failed after syncing upstream"
-          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')"
+          body="The merged upstream changes (branch auto/sync) failed the tests or the Windows build, so main and the releases were left untouched. Details: ${RUN_URL}"
+          echo "::error title=${title}::${body}"
+          {
+            echo "### ${title}"
+            echo
+            echo "${body}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number' 2>/dev/null || true)"
           if [ -z "$existing" ]; then
-            gh issue create --title "$title" --body "The merged upstream changes (branch auto/sync) failed the tests or the Windows build, so main and the releases were left untouched. Details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            gh issue create --title "$title" --body "$body" 2>/dev/null \
+              || echo "Could not open an issue (Issues may be disabled on this fork). The details are in this run's summary."
           fi
+          exit 1
 
   publish:
     name: Publish
