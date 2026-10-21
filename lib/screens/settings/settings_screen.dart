@@ -228,6 +228,10 @@ class _SettingsScreenState extends State<SettingsScreen> with FocusableTab, Moun
                 if (_keyboardShortcutsSupported || PlatformDetector.shouldActAsRemoteHost(sheetContext))
                   _buildControlsSection(sheetContext),
 
+                // Not tied to the keyboard/desktop Controls group: phones and TVs
+                // run Plex Companion too. iOS is excluded (needs multicast entitlements).
+                if (!Platform.isIOS) _buildHomeAssistantSection(),
+
                 _buildAdvancedSection(),
 
                 if (UpdateService.isUpdateCheckAvailable) ...[_buildUpdateSection()],
@@ -534,7 +538,17 @@ class _SettingsScreenState extends State<SettingsScreen> with FocusableTab, Moun
           title: t.settings.companionRemoteServer,
           subtitle: t.settings.companionRemoteServerDescription,
         ),
-      if (PlatformDetector.shouldActAsRemoteHost(context))
+    ];
+    // Keyboard platforms render nothing until the shortcuts service loads; an
+    // empty SettingsGroup would paint a bare section title.
+    if (children.isEmpty) return const SizedBox.shrink();
+    return SettingsGroup(title: t.settings.controls, children: children);
+  }
+
+  Widget _buildHomeAssistantSection() {
+    return SettingsGroup(
+      title: 'Home Assistant',
+      children: [
         SettingSwitchTile(
           focusNode: _focusTracker.get(_kPlexCompanion),
           pref: settings.SettingsService.enablePlexCompanion,
@@ -542,13 +556,10 @@ class _SettingsScreenState extends State<SettingsScreen> with FocusableTab, Moun
           title: 'Plex Companion (Home Assistant)',
           subtitle:
               'Let Home Assistant and Plex apps on your network find and control this player. '
-              'Anyone on your network can control it while this is on.',
+              'Plezy has to be running. Anyone on your network can control it while this is on.',
         ),
-    ];
-    // Keyboard platforms render nothing until the shortcuts service loads; an
-    // empty SettingsGroup would paint a bare section title.
-    if (children.isEmpty) return const SizedBox.shrink();
-    return SettingsGroup(title: t.settings.controls, children: children);
+      ],
+    );
   }
 
   Widget _buildAdvancedSection() {

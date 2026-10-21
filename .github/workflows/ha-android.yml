@@ -1,0 +1,158 @@
+# Builds the Android APKs for your Home Assistant fork and attaches them to the
+# same GitHub Release the Windows workflow publishes.
+#
+# It is deliberately a separate workflow from ha-sync.yml, so a problem with the
+# Android build can never block or break the Windows release.
+#
+# Runs after every successful "Sync upstream and build" run, and by hand. If
+# the newest release already has APKs it does nothing (unless forced).
+#
+# Save as .github/workflows/ha-android.yml on the fork's `main` branch.
+name: Build Android APKs (Home Assistant fork)
+
+on:
+  workflow_run:
+    workflows: ["Sync upstream and build (Home Assistant fork)"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: Rebuild and replace the APKs even if the latest release already has them
+        type: boolean
+        default: false
+
+concurrency:
+  group: ha-android
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  android:
+    name: Build and attach Android APKs
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      # True once the signing key (see the Android steps in the guide) is set up.
+      HAS_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_STORE_PASSWORD != '' && secrets.ANDROID_KEY_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' }}
+    steps:
+      - name: Find the newest release and check whether it needs APKs
+        id: rel
+        env:
+          FORCE_BUILD: ${{ github.event.inputs.force_build }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release list --limit 50 --json tagName,isDraft --jq '[.[] | select(.isDraft | not) | .tagName | select(test("^v.*-ha[0-9]+$"))][0] // empty')"
+          if [ -z "$tag" ]; then
+            echo "No Home Assistant release exists yet; nothing to attach APKs to."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx 'plezy-ha-android-arm64-v8a.apk' \
+             && [ "${FORCE_BUILD:-false}" != "true" ]; then
+            echo "$tag already has Android APKs."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Building APKs for $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "build=true" >> "$GITHUB_OUTPUT"
+
+      # Build exactly the code that was released, not whatever main is now.
+      - uses: actions/checkout@v4
+        if: steps.rel.outputs.build == 'true'
+        with:
+          ref: ${{ steps.rel.outputs.tag }}
+
+      - name: Read the Flutter version the original project pins
+        if: steps.rel.outputs.build == 'true'
+        id: flutter
+        run: |
+          version="$(grep -m1 -E '^\s*FLUTTER_VERSION:' .github/workflows/build.yml | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [ -z "$version" ]; then echo "Could not read FLUTTER_VERSION from .github/workflows/build.yml"; exit 1; fi
+          echo "Flutter $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        if: steps.rel.outputs.build == 'true'
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: subosito/flutter-action@v2
+        if: steps.rel.outputs.build == 'true'
+        with:
+          channel: stable
+          flutter-version: ${{ steps.flutter.outputs.version }}
+          cache: true
+
+      - name: Cache Gradle
+        if: steps.rel.outputs.build == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ha-android-gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+
+      - name: Install dependencies
+        if: steps.rel.outputs.build == 'true'
+        run: flutter pub get --enforce-lockfile --no-example
+
+      - name: Home Assistant (Plex Companion) tests
+        if: steps.rel.outputs.build == 'true'
+        run: flutter test test/services/plex_companion
+
+      - name: Configure Android signing
+        if: steps.rel.outputs.build == 'true' && env.HAS_SIGNING == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+          {
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyPassword=$KEY_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "storeFile=upload-keystore.jks"
+          } > android/key.properties
+
+      - name: Warn when building without a signing key
+        if: steps.rel.outputs.build == 'true' && env.HAS_SIGNING != 'true'
+        run: echo "::warning::No Android signing key configured. The APKs are debug-signed with a throwaway key, so a later build signed with your real key cannot update over them (uninstall first)."
+
+      - name: Build APKs
+        if: steps.rel.outputs.build == 'true'
+        run: flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64
+
+      - name: Remove the signing key
+        if: always()
+        run: rm -f android/app/upload-keystore.jks android/key.properties
+
+      - name: Attach APKs to the release
+        if: steps.rel.outputs.build == 'true'
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          set -euo pipefail
+          out=build/app/outputs/flutter-apk
+          for abi in arm64-v8a armeabi-v7a; do
+            test -f "$out/app-$abi-release.apk" || { echo "Missing $abi APK"; exit 1; }
+            cp "$out/app-$abi-release.apk" "plezy-ha-android-$abi.apk"
+          done
+          gh release upload "$TAG" plezy-ha-android-arm64-v8a.apk plezy-ha-android-armeabi-v7a.apk --clobber
+
+      - name: Report a failure (once)
+        if: failure()
+        run: |
+          title="Android build failed"
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')"
+          if [ -z "$existing" ]; then
+            gh issue create --title "$title" --body "The Android APK build failed. Details: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
