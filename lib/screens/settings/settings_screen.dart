@@ -234,12 +234,10 @@ class _SettingsScreenState extends State<SettingsScreen> with FocusableTab, Moun
                     _buildControlsSection(sheetContext),
 
 <<<<<<< HEAD
-                // Not tied to the keyboard/desktop Controls group: phones and TVs
-                // run Plex Companion too. iOS is excluded (needs multicast entitlements).
-                if (!Platform.isIOS) _buildHomeAssistantSection(),
+                  // Not tied to the keyboard/desktop Controls group: phones and TVs
+                  // run Plex Companion too. iOS is excluded (needs multicast entitlements).
+                  if (!Platform.isIOS) _buildHomeAssistantSection(),
 
-                _buildAdvancedSection(),
-=======
                   _buildAdvancedSection(),
 >>>>>>> upstream/main
 
