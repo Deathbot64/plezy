@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Plezy (Home Assistant fork) Updates</title>
+    <item>
+      <title>Version 2.26.0</title>
+      <sparkle:version>160</sparkle:version>
+      <sparkle:shortVersionString>2.26.0</sparkle:shortVersionString>
+      <enclosure url="https://github.com/Deathbot64/plezy/releases/download/v2.26.0-ha21/plezy-windows-installer.exe"
+       length="59113829" type="application/octet-stream"
+       sparkle:edSignature="03uKpoG4MixDvrq0++wsh4VlDq3AouLxIGrz6XaFpKnvjxm0ZhxSUj5VNZ9krvKiTiyUTdchZkgciT3I7JlvDw=="
+       sparkle:installerArguments="/SILENT /SP-"
+       sparkle:os="windows" />
+    </item>
+  </channel>
+</rss>
