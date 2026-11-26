@@ -233,13 +233,13 @@ class _SettingsScreenState extends State<SettingsScreen> with FocusableTab, Moun
                   if (_keyboardShortcutsSupported || PlatformDetector.shouldActAsRemoteHost(sheetContext))
                     _buildControlsSection(sheetContext),
 
-<<<<<<< HEAD
+
                   // Not tied to the keyboard/desktop Controls group: phones and TVs
                   // run Plex Companion too. iOS is excluded (needs multicast entitlements).
                   if (!Platform.isIOS) _buildHomeAssistantSection(),
 
                   _buildAdvancedSection(),
->>>>>>> upstream/main
+
 
                   if (UpdateService.isUpdateCheckAvailable) ...[_buildUpdateSection()],
 
