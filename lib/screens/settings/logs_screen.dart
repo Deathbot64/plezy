@@ -8,7 +8,6 @@ import 'package:plezy/utils/media_server_http_client.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:flutter/services.dart';
 import 'package:logger/logger.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 import '../../focus/focusable_action_bar.dart';
 import '../../widgets/dialog_action_button.dart';
 import '../../widgets/app_icon.dart';
@@ -24,6 +23,7 @@ import '../../services/log_upload_service.dart';
 import '../../services/startup_diagnostics.dart';
 import '../../services/video_decode_capabilities.dart';
 import '../../utils/app_logger.dart';
+import '../../utils/app_version.dart';
 import '../../utils/formatters.dart';
 import '../../utils/platform_detector.dart';
 import '../../utils/snackbar_helper.dart';
@@ -125,11 +125,13 @@ class _LogsScreenState extends State<LogsScreen> with MountedSetStateMixin {
   }
 
   Future<void> _loadDeviceInfo() async {
-    final packageInfo = await PackageInfo.fromPlatform();
+    final appVersion = await AppVersion.current();
     final deviceInfo = widget.deviceInfoPlugin ?? DeviceInfoPlugin();
     final buffer = StringBuffer();
     final commitSuffix = gitCommit.isNotEmpty ? ' ${gitCommit.substring(0, 7)}' : '';
-    buffer.writeln('${t.app.title} v${packageInfo.version} (${packageInfo.buildNumber})$commitSuffix');
+    buffer.writeln(
+      '${t.app.title} v${appVersion.versionOrUnknown} (${appVersion.buildNumber ?? AppVersion.unknown})$commitSuffix',
+    );
 
     if (Platform.isAndroid) {
       final info = await deviceInfo.androidInfo;
@@ -463,78 +465,84 @@ class _LogsScreenState extends State<LogsScreen> with MountedSetStateMixin {
               focusNode: _selectionFocusNode,
               child: SelectionContainer(
                 delegate: _recordSelection,
-                child: CustomScrollView(
-                  primary: true,
-                  slivers: [
-                    CustomAppBar(
-                      // Chrome is not log content; keep it out of drag-selection.
-                      title: SelectionContainer.disabled(child: Text(t.screens.logs)),
-                      pinned: true,
-                      actions: [
-                        FocusableActionBar(
-                          actions: [
-                            FocusableAction(
-                              icon: Symbols.refresh_rounded,
-                              tooltip: t.common.refresh,
-                              onPressed: _loadLogs,
+                // Horizontal-only SafeArea: log rows clear a landscape notch
+                // or iPhone Duo's portrait sensor column.
+                child: SafeArea(
+                  top: false,
+                  bottom: false,
+                  child: CustomScrollView(
+                    primary: true,
+                    slivers: [
+                      CustomAppBar(
+                        // Chrome is not log content; keep it out of drag-selection.
+                        title: SelectionContainer.disabled(child: Text(t.screens.logs)),
+                        pinned: true,
+                        actions: [
+                          FocusableActionBar(
+                            actions: [
+                              FocusableAction(
+                                icon: Symbols.refresh_rounded,
+                                tooltip: t.common.refresh,
+                                onPressed: _loadLogs,
+                              ),
+                              FocusableAction(
+                                icon: Symbols.upload_rounded,
+                                tooltip: t.logs.uploadLogs,
+                                onPressed: _hasDiagnostics ? _uploadLogs : null,
+                              ),
+                              FocusableAction(
+                                icon: Symbols.content_copy_rounded,
+                                tooltip: t.logs.copyLogs,
+                                onPressed: _hasDiagnostics ? _copyAllLogs : null,
+                              ),
+                              FocusableAction(
+                                icon: Symbols.delete_outline_rounded,
+                                tooltip: t.logs.clearLogs,
+                                onPressed: _hasDiagnostics ? _clearLogs : null,
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      // A launch that failed the startup gate leaves nothing in the
+                      // in-memory buffer — that process is gone. Show its record
+                      // here, where the user can actually act on it (#1732).
+                      ?_buildPreviousFailureBanner(theme),
+                      if (_logs.isEmpty)
+                        SliverFillRemaining(child: Center(child: Text(t.messages.noLogsAvailable)))
+                      else ...[
+                        if (_deviceInfo.isNotEmpty)
+                          SliverPadding(
+                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                            sliver: SliverToBoxAdapter(
+                              child: _LogRecord(
+                                child: Text.rich(
+                                  TextSpan(style: _logTextStyle(theme), children: _buildDeviceInfoSpans()),
+                                ),
+                              ),
                             ),
-                            FocusableAction(
-                              icon: Symbols.upload_rounded,
-                              tooltip: t.logs.uploadLogs,
-                              onPressed: _hasDiagnostics ? _uploadLogs : null,
-                            ),
-                            FocusableAction(
-                              icon: Symbols.content_copy_rounded,
-                              tooltip: t.logs.copyLogs,
-                              onPressed: _hasDiagnostics ? _copyAllLogs : null,
-                            ),
-                            FocusableAction(
-                              icon: Symbols.delete_outline_rounded,
-                              tooltip: t.logs.clearLogs,
-                              onPressed: _hasDiagnostics ? _clearLogs : null,
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    // A launch that failed the startup gate leaves nothing in the
-                    // in-memory buffer — that process is gone. Show its record
-                    // here, where the user can actually act on it (#1732).
-                    ?_buildPreviousFailureBanner(theme),
-                    if (_logs.isEmpty)
-                      SliverFillRemaining(child: Center(child: Text(t.messages.noLogsAvailable)))
-                    else ...[
-                      if (_deviceInfo.isNotEmpty)
+                          ),
                         SliverPadding(
-                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                          sliver: SliverToBoxAdapter(
-                            child: _LogRecord(
+                          padding: EdgeInsets.fromLTRB(12, _deviceInfo.isEmpty ? 12 : 0, 12, 12),
+                          // One widget per entry so only the visible slice is laid
+                          // out. The buffer holds up to 5 MiB of text; as a single
+                          // paragraph that was a multi-second frame and hundreds of
+                          // MB of glyph data — an OOM kill on phones and TVs.
+                          sliver: SliverList.builder(
+                            itemCount: _logs.length,
+                            itemBuilder: (context, index) => _LogRecord(
                               child: Text.rich(
-                                TextSpan(style: _logTextStyle(theme), children: _buildDeviceInfoSpans()),
+                                TextSpan(style: _logTextStyle(theme), children: _buildEntrySpans(_logs[index])),
                               ),
                             ),
                           ),
                         ),
-                      SliverPadding(
-                        padding: EdgeInsets.fromLTRB(12, _deviceInfo.isEmpty ? 12 : 0, 12, 12),
-                        // One widget per entry so only the visible slice is laid
-                        // out. The buffer holds up to 5 MiB of text; as a single
-                        // paragraph that was a multi-second frame and hundreds of
-                        // MB of glyph data — an OOM kill on phones and TVs.
-                        sliver: SliverList.builder(
-                          itemCount: _logs.length,
-                          itemBuilder: (context, index) => _LogRecord(
-                            child: Text.rich(
-                              TextSpan(style: _logTextStyle(theme), children: _buildEntrySpans(_logs[index])),
-                            ),
-                          ),
-                        ),
-                      ),
-                      // Only the log body needs it: the empty state already fills
-                      // the viewport, so a trailing inset would just add slack.
-                      const SliverSystemBottomInset(),
+                        // Only the log body needs it: the empty state already fills
+                        // the viewport, so a trailing inset would just add slack.
+                        const SliverSystemBottomInset(),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
             ),

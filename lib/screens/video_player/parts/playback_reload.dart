@@ -362,6 +362,12 @@ extension _VideoPlayerReloadMethods on VideoPlayerScreenState {
   /// happened: only [MediaReloadOutcome.failed] means the previous session
   /// is still on screen with its (possibly dead) stream; user feedback for
   /// failures is shown here unless [showErrorUi] is false.
+  ///
+  /// [forceTranscode] asks the server to transcode even where the file itself
+  /// would play; see [PlaybackInitializationOptions.forceTranscode].
+  /// When null, a forced open carries over to reloads of the same item at the
+  /// same preset (a resume, an audio switch, end-of-stream recovery), so
+  /// those never hand back the file the server refused.
   Future<MediaReloadOutcome> _reloadMediaInPlace({
     required MediaItem metadata,
     int? selectedMediaIndex,
@@ -378,6 +384,7 @@ extension _VideoPlayerReloadMethods on VideoPlayerScreenState {
     bool startPaused = false,
     bool useCurrentAudioStreamSelection = true,
     bool showErrorUi = true,
+    bool? forceTranscode,
     PlaybackTransitionLease? transitionLease,
     String reason = 'media reload',
   }) async {
@@ -493,8 +500,13 @@ extension _VideoPlayerReloadMethods on VideoPlayerScreenState {
 
       final targetMediaIndex = selectedMediaIndex ?? _effectiveSelectedMediaIndex;
       final targetQualityPreset = qualityPreset ?? _selectedQualityPreset;
+      final targetForceTranscode =
+          forceTranscode ??
+          (!isItemChange &&
+              previousOpenRequest != null &&
+              previousOpenRequest.forceTranscode &&
+              previousOpenRequest.qualityPreset == targetQualityPreset);
       final downloadOutranksQuality = _downloadOutranksQuality;
-      final streamOnly = _watchTogetherRoom() != null;
       final targetAudioStreamId = crossesPart
           ? null
           : useCurrentAudioStreamSelection
@@ -515,6 +527,7 @@ extension _VideoPlayerReloadMethods on VideoPlayerScreenState {
         qualityPreset: targetQualityPreset,
         audioStreamId: targetAudioStreamId,
         resumePosition: resumePosition,
+        forceTranscode: targetForceTranscode,
       );
       final preservesRequestedSubtitleSource =
           !isItemChange &&
@@ -581,10 +594,10 @@ extension _VideoPlayerReloadMethods on VideoPlayerScreenState {
             sessionIdentifier: _playbackSessionIdentifier,
             transcodeSessionId: _playbackTranscodeSessionId,
             startPosition: openResumePosition,
+            forceTranscode: targetForceTranscode,
           ),
           offlineLibraryMode: _offlineLibraryMode,
           downloadOutranksQuality: downloadOutranksQuality,
-          streamOnly: streamOnly,
         );
         if (!isCurrentReload()) return MediaReloadOutcome.superseded;
         final result = playbackContext.result;
@@ -731,6 +744,7 @@ extension _VideoPlayerReloadMethods on VideoPlayerScreenState {
             didOpenReplacement = true;
             if (!attempt.isCurrent) return;
             _commitPlaybackSession(session);
+            if (isItemChange) _serverLimitFallbackUsed = false;
           },
         );
         if (!opened) return MediaReloadOutcome.superseded;
@@ -884,13 +898,14 @@ extension _VideoPlayerReloadMethods on VideoPlayerScreenState {
   /// Re-push scope-persisted player values for the item swapped in by
   /// [_reloadMediaInPlace].
   ///
-  /// Shader, box-fit, and sync offsets are applied once per screen/player and
-  /// otherwise survive an in-place reload as latent native state. Sync offsets
-  /// are file timing, so every item starts from its own resolved offset and a
-  /// session-only tweak stays with the item it was made on (#2449). Shader and
-  /// box-fit are picture preferences: only changed resolutions are pushed, so
-  /// a session-local tweak keeps carrying over, and a Watch Together swap or a
-  /// next-episode hop across a library/title boundary still switches them.
+  /// Shader, box-fit, zoom, and sync offsets are applied once per
+  /// screen/player and otherwise survive an in-place reload as latent native
+  /// state. Sync offsets are file timing, so every item starts from its own
+  /// resolved offset and a session-only tweak stays with the item it was made
+  /// on (#2449). Shader, box-fit, and zoom are picture preferences: only
+  /// changed resolutions are pushed, so a session-local tweak keeps carrying
+  /// over, and a Watch Together swap or a next-episode hop across a
+  /// library/title boundary still switches them.
   /// Playback speed needs no handling here: TrackManager re-resolves it on
   /// every open.
   Future<void> _reapplyScopedPlayerPrefsForItemChange({
@@ -906,6 +921,12 @@ extension _VideoPlayerReloadMethods on VideoPlayerScreenState {
       final boxFit = ScopedPlayerPrefs.resolve(ScopedPlayerPrefs.boxFitMode, metadata);
       if (boxFit != previousBoxFit) {
         _videoFilterManager?.setBoxFitMode(boxFit);
+      }
+
+      final previousZoom = ScopedPlayerPrefs.resolve(ScopedPlayerPrefs.videoZoom, previousMetadata);
+      final zoom = ScopedPlayerPrefs.resolve(ScopedPlayerPrefs.videoZoom, metadata);
+      if (zoom != previousZoom) {
+        _videoFilterManager?.setZoomScale(zoom);
       }
 
       final previousShaderId = ScopedPlayerPrefs.resolve(ScopedPlayerPrefs.shaderPreset, previousMetadata);

@@ -105,8 +105,8 @@ packages:
     dependency: "direct main"
     description:
       path: "."
-      ref: "7c341be73df8a6a5ddccb06124807ac250a32bc1"
-      resolved-ref: "7c341be73df8a6a5ddccb06124807ac250a32bc1"
+      ref: "4f361e91f3cb79b7e48486b6397e43974b6e0452"
+      resolved-ref: "4f361e91f3cb79b7e48486b6397e43974b6e0452"
       url: "https://github.com/edde746/background_downloader"
     source: git
     version: "9.6.2"
@@ -775,10 +775,10 @@ packages:
     dependency: "direct main"
     description:
       name: openwatchparty
-      sha256: e5c19699e6fdf607c5f01c6fa970bedbc824ffcd87a12d29f7c0f522706a29ef
+      sha256: c557ede0201079af2ef54b6a06c6016d4cb2bd446fb7c9ba90561f8e595c87db
       url: "https://pub.dev"
     source: hosted
-    version: "1.0.0"
+    version: "1.1.0"
   os_media_controls:
     dependency: "direct main"
     description:
@@ -1438,7 +1438,7 @@ packages:
     source: hosted
     version: "1.1.1"
   web_socket:
-    dependency: "direct dev"
+    dependency: "direct main"
     description:
       name: web_socket
       sha256: "34d64019aa8e36bf9842ac014bb5d2f5586ca73df5e4d9bf5c936975cae6982c"

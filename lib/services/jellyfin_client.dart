@@ -4,13 +4,14 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:http/http.dart' as http;
-import 'package:package_info_plus/package_info_plus.dart';
 
 import '../connection/connection.dart';
+import '../media/chapter_marker_classifier.dart';
 import '../media/account_preferences.dart';
 import '../media/artist_discography.dart';
 import '../media/episode_collection.dart';
 import '../media/library_filter_result.dart';
+import '../media/library_genre.dart';
 import '../media/library_query.dart';
 import 'favorite_channels_repository.dart';
 import 'live_session_tracker.dart';
@@ -49,6 +50,7 @@ import '../media/media_source_info.dart';
 import '../media/media_sort.dart';
 import '../media/media_version.dart';
 import '../utils/app_logger.dart';
+import '../utils/app_version.dart';
 import '../utils/device_identity.dart';
 import '../utils/failover_http_client.dart';
 import '../utils/media_server_retry.dart';
@@ -311,13 +313,7 @@ class JellyfinClient
     // protects unavoidable network-layer diagnostics.
     _registerConnectionDiagnostics(connection);
     final endpointDiscovery = JellyfinEndpointDiscovery(dialect: connection.dialect);
-    String version = '1.0';
-    try {
-      final pkg = await PackageInfo.fromPlatform();
-      if (pkg.version.isNotEmpty) version = pkg.version;
-    } catch (_) {
-      // Tests / non-platform contexts — keep the fallback version.
-    }
+    final version = (await AppVersion.current()).versionOrUnknown;
     // Never throws: tests and non-platform contexts degrade to the bare OS
     // name, which the helpers below turn into a usable client and device.
     final identity = await DeviceIdentityService.resolve();
@@ -565,7 +561,12 @@ class JellyfinClient
   @override
   Future<HealthStatus> checkHealth() async {
     try {
-      final response = await _http.get(paths.currentUser, timeout: MediaServerTimeouts.jellyfinProbe);
+      // Same dead-pooled-socket case as Plex's probe (#2915).
+      final response = await _http.get(
+        paths.currentUser,
+        timeout: MediaServerTimeouts.jellyfinProbe,
+        retryTimeoutInPlace: true,
+      );
       final ok = response.statusCode >= 200 && response.statusCode < 300;
       if (ok) {
         final data = response.data;

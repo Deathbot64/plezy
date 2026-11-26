@@ -13,8 +13,9 @@ import 'package:web_socket/web_socket.dart';
 /// the room, share and clear media, play, pause, seek, change the rate,
 /// report status, hand over the host, kick, lock, end and leave. The
 /// readiness barrier releases as soon as every counted participant is ready,
-/// at once (no start delay), and no barrier or end-of-media timer runs, so a
-/// widget test has no relay timers to drain.
+/// at once (no start delay), and a release at the media's end pauses there
+/// with the action `ended` (SPEC.md §12.11). No barrier or end-of-media timer
+/// runs, so a widget test has no relay timers to drain.
 ///
 /// Pass [party] as a `WatchTogetherProvider`'s `partyFactory`. Relay time is
 /// [clock]'s, so `fakeAsync` and `testWidgets` drive it.
@@ -25,6 +26,11 @@ final class FakeOwpRelay {
   int nowMs() => _stopwatch.elapsedMilliseconds;
 
   static const String code = 'K7MQ2X';
+
+  /// The room's code: [code] until a join with `create` makes the room again
+  /// under the code that join names (SPEC.md §7.2).
+  String get roomCode => _roomCode;
+  var _roomCode = code;
 
   /// Every client message but pings, with its sender's peer ID (null before
   /// it joined), in order.
@@ -48,6 +54,10 @@ final class FakeOwpRelay {
   Map<String, Object?>? _media;
   List<String> _waitingOn = const [];
   var _open = true;
+
+  /// A release reached the media's end; the next broadcast is followed by the
+  /// `ended` one.
+  var _ended = false;
 
   /// When set, the relay refuses every join with this error code, as a full
   /// room (`room_full`) or a busy relay (`relay_full`) would.
@@ -177,15 +187,33 @@ final class FakeOwpRelay {
 
   void _join(_Connection conn, Map<String, Object?> message) {
     if (refuseJoins case final refusal?) return _refuse(conn, 'join', refusal);
-    if (!_open || message['code'] != code) return _refuse(conn, 'join', 'room_not_found');
+    if (message['create'] == true && _members.isEmpty) _makeRoom(message['code']! as String);
+    if (!_open || message['code'] != _roomCode) return _refuse(conn, 'join', 'room_not_found');
     if (_locked) return _refuse(conn, 'join', 'room_locked');
     _add(conn, message, host: false);
     _broadcast(except: _members.last);
   }
 
+  /// SPEC.md §7.2, §9.3: a join with `create` makes a new room with its code.
+  /// The relay holds one room, so it does that only while nobody is in it.
+  void _makeRoom(String roomCode) {
+    _roomCode = roomCode;
+    _open = true;
+    _rev = 0;
+    _epoch = 0;
+    _phase = 'idle';
+    _positionMs = 0;
+    _atMs = nowMs();
+    _rate = 1;
+    _control = 'host';
+    _locked = false;
+    _media = null;
+    _waitingOn = const [];
+  }
+
   void _resume(_Connection conn, Map<String, Object?> message) {
     final member = _member(message['peerId'] as String?);
-    if (!_open || message['code'] != code || member == null || message['token'] != _token(member)) {
+    if (!_open || message['code'] != _roomCode || member == null || message['token'] != _token(member)) {
       return _refuse(conn, 'resume', 'resume_failed');
     }
     member
@@ -294,7 +322,7 @@ final class FakeOwpRelay {
 
   void _sendJoined(_Member member) => member.conn.send({
     'type': 'joined',
-    'code': code,
+    'code': _roomCode,
     'you': {'peerId': member.peerId, 'token': _token(member)},
     'room': _snapshot(),
     'media': _media,
@@ -330,7 +358,17 @@ final class FakeOwpRelay {
     if (_waitingOn.isEmpty) {
       _phase = 'playing';
       _atMs = nowMs();
+      _endAtEnd();
     }
+  }
+
+  /// SPEC.md §12.11 at a release: a room that would play from its end pauses
+  /// there at once.
+  void _endAtEnd() {
+    if (_positionMs < _durationMs) return;
+    _phase = 'paused';
+    _positionMs = _durationMs;
+    _ended = true;
   }
 
   /// SDK.md §12.5, without the stall grace.
@@ -351,7 +389,7 @@ final class FakeOwpRelay {
 
   Map<String, Object?> _snapshot() => {
     'rev': _rev,
-    'code': code,
+    'code': _roomCode,
     'epoch': _epoch,
     'phase': _phase,
     'positionMs': _positionMs,
@@ -380,6 +418,10 @@ final class FakeOwpRelay {
     final message = {'type': 'room', ..._snapshot(), 'action': ?action, if (withMedia) 'media': _media};
     for (final member in _members) {
       if (!identical(member, except) && member.connected) member.conn.send(message);
+    }
+    if (_ended) {
+      _ended = false;
+      _broadcast(action: {'kind': 'ended', 'by': null});
     }
   }
 }

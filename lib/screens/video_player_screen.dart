@@ -86,6 +86,7 @@ import '../providers/shader_provider.dart';
 import '../providers/account_preferences_controller.dart';
 import '../utils/app_logger.dart';
 import '../utils/dialogs.dart';
+import '../utils/iphone_duo.dart';
 import '../utils/log_redaction_manager.dart';
 import '../utils/immersive_mode_guard.dart';
 import '../utils/live_tv_player_navigation.dart';
@@ -372,6 +373,7 @@ class _PlaybackOpenRequest {
     required this.qualityPreset,
     required this.audioStreamId,
     required this.resumePosition,
+    this.forceTranscode = false,
   });
 
   final MediaItem metadata;
@@ -381,13 +383,18 @@ class _PlaybackOpenRequest {
   final int? audioStreamId;
   final Duration? resumePosition;
 
+  /// A server transcode the viewer asked for after the server refused the
+  /// file itself (HTTP 500); see [PlaybackInitializationOptions.forceTranscode].
+  final bool forceTranscode;
+
   /// Same item and source selection; where it resumes from is incidental.
   bool sameSourceAs(_PlaybackOpenRequest other) =>
       metadata.globalKey == other.metadata.globalKey &&
       mediaIndex == other.mediaIndex &&
       mediaSourceId == other.mediaSourceId &&
       qualityPreset == other.qualityPreset &&
-      audioStreamId == other.audioStreamId;
+      audioStreamId == other.audioStreamId &&
+      forceTranscode == other.forceTranscode;
 
   _PlaybackOpenRequest resumingAt(Duration? position) => _PlaybackOpenRequest(
     metadata: metadata,
@@ -396,6 +403,7 @@ class _PlaybackOpenRequest {
     qualityPreset: qualityPreset,
     audioStreamId: audioStreamId,
     resumePosition: position,
+    forceTranscode: forceTranscode,
   );
 }
 
@@ -546,6 +554,24 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
   static String? get activeGlobalKey => _activeRouteGuard.activeGlobalKey;
 
   static bool isNavigationActive(VideoPlayerLaunchIdentity identity) => _activeRouteGuard.blocks(identity);
+
+  /// Whether the active player keeps the session on screen in Picture in
+  /// Picture if the app is backgrounded now. The resume profile prompt reads
+  /// it as the app leaves the foreground: a session that stayed in sight never
+  /// needs a profile chosen again (#2195).
+  static bool get activeSessionContinuesInPip {
+    final owner = _activeRouteGuard.owner;
+    return owner is VideoPlayerScreenState && owner._sessionContinuesInPip;
+  }
+
+  /// Keeps the active player paused until [until] completes. The resume
+  /// profile picker covers the player, and whoever woke the device must choose
+  /// a profile (and pass its PIN) before the previous profile's session plays
+  /// again; a choice of the same profile leaves it paused for them to resume.
+  static void holdActivePlaybackUntil(Future<void> until) {
+    final owner = _activeRouteGuard.owner;
+    if (owner is VideoPlayerScreenState) owner._holdPlaybackForProfileSelection(until);
+  }
 
   Player? player;
   VideoVolumeController? _volumeController;
@@ -781,6 +807,10 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
   // `player.open()` so the semantics are unchanged — we just eat the cost
   // during otherwise-idle setup time.
   Future<void>? _audioFocusFuture;
+  // The custom mpv config as parsed when the current player was set up: what
+  // the player actually received. Per-open tunings that yield to a config line
+  // read this rather than the setting, which can change while the player lives.
+  Map<String, String> _appliedCustomMpvConfig = const {};
   late final String _playbackSessionIdentifier;
   late String _playbackTranscodeSessionId;
 
@@ -951,6 +981,20 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
       ((Platform.isIOS || Platform.isMacOS) && _autoPipEnabled) ||
       (Platform.isAndroid && _androidAutoPipTransitionInFlight);
 
+  /// Whether backgrounding now leaves this session playing in PiP. Narrower
+  /// than [_shouldSkipForPip], which also leaves a *paused* Apple player alone
+  /// when auto-PiP is enabled: nothing is lost by not pausing a paused player,
+  /// but native auto-PiP is armed only while playing ([_updateAutoPipState]),
+  /// so a paused one leaves the screen with the app.
+  bool get _sessionContinuesInPip =>
+      PipService().isPipActive.value ||
+      (Platform.isAndroid && _androidAutoPipTransitionInFlight) ||
+      ((Platform.isIOS || Platform.isMacOS) && _autoPipEnabled && _pipInitialized && (player?.state.playing ?? false));
+
+  /// Open [holdActivePlaybackUntil] holds; playback may not start while any is.
+  int _profileSelectionHolds = 0;
+  bool get _playbackHeldForProfileSelection => _profileSelectionHolds > 0;
+
   MediaControlsManager? _mediaControlsManager;
 
   /// [_initializeServices] ran while the open had already failed and left the
@@ -964,6 +1008,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     hasLiveSeekWindow: () => _live.captureBuffer != null,
     hasNextLiveChannel: () => _hasNextChannel,
     hasPreviousLiveChannel: () => _hasPreviousChannel,
+    isPlaybackHeld: () => _playbackHeldForProfileSelection,
     shouldSkipForPip: () => _shouldSkipForPip,
     isPlayerInitialized: () => _isPlayerInitialized,
     metadata: () => _currentMetadata,
@@ -1083,8 +1128,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   /// Whether a downloaded copy may stand in for a capped
   /// [_selectedQualityPreset] (issue #2466). Only the saved startup default
-  /// yields; a picked quality is honored. In a Watch Together room the player
-  /// streams instead (see [PlaybackSourceResolver.resolve]'s `streamOnly`).
+  /// yields; a picked quality is honored.
   bool get _downloadOutranksQuality => !_qualityPresetExplicit;
 
   /// Atomically publish a freshly opened [PlaybackSession] and refine the
@@ -1204,6 +1248,11 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
       appLogger.d('Playback blocked while Android Automotive app is not resumed');
       return Future<void>.value();
     }
+    if (_playbackHeldForProfileSelection) {
+      _playbackIntentShouldPlay = false;
+      appLogger.d('Playback held while the profile picker covers the player');
+      return Future<void>.value();
+    }
     _playbackIntentShouldPlay = true;
     if (widget.isLive && _live.retryFailed) {
       return _retryLiveStreamForPlayIntent();
@@ -1226,6 +1275,10 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (_shuttingDown) return Future<void>.value();
     if (!automotivePlaybackAllowedNow()) {
       appLogger.d('Play/pause requested while Android Automotive app is not resumed; keeping playback paused');
+      return _pauseWithPlaybackIntent(currentPlayer);
+    }
+    if (_playbackHeldForProfileSelection) {
+      appLogger.d('Play/pause requested while the profile picker covers the player; keeping playback paused');
       return _pauseWithPlaybackIntent(currentPlayer);
     }
     if (widget.isLive && _live.retryFailed) {
@@ -1375,12 +1428,14 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
         }
       },
     );
-    if (!widget.isOffline && !widget.isLive) {
+    // Downloads join too: a download of a server that is online is the
+    // server's file, which the room can share and follow.
+    if (!widget.isLive) {
       try {
         _watchTogetherProvider = context.read<WatchTogetherProvider?>();
       } catch (_) {
         // Watch Together lives in the profile session; a player outside it
-        // (tests, the offline shell) plays on its own.
+        // plays on its own.
       }
       _wtRoomOpen = widget.watchTogetherCopy != null;
       _registerWithWatchTogether();
@@ -1391,10 +1446,18 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     // already fullscreen belongs to the app window (#1624).
     FullscreenStateManager().beginScope();
 
+    // iPhone Duo: horizontal status bar while playing, so the video and its
+    // controls get the full width instead of sharing it with the vertical bar.
+    // Claimed here rather than after startup: a replacement player (next
+    // episode) mounts before the one it replaces is disposed, so the two
+    // claims overlap and the bar never comes back in between.
+    IphoneDuo.instance.disableVerticalBarFor(this);
+
     _playerNavigationCoordinator = PlayerNavigationCoordinator(
       chromeController: _chromeController,
       isPromptOpen: () => _episode.showPlayNextDialog || _showStillWatchingPrompt,
       dismissPrompt: _dismissPlaybackPromptForBack,
+      backLeavesPrompt: () => _episode.showPlayNextDialog,
       isChromePresented: () =>
           _isPlayerInitialized && player != null && _firstFrame.uiReady.value && _chromeController.controlsPresented,
       // On phones a Back must exit the player even with the controls up
@@ -1795,7 +1858,6 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
           ),
           offlineLibraryMode: false,
           downloadOutranksQuality: _downloadOutranksQuality,
-          streamOnly: _watchTogetherRoom() != null,
         );
         // If MPV setup below throws before `_startPlayback` awaits this,
         // tell Dart we've "handled" the future so it's not reported as an
@@ -1817,7 +1879,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
             );
       }
 
-      if (Platform.isWindows) {
+      if (Platform.isWindows || Platform.isMacOS) {
         initPhase = 'syncing display mode';
         _displayModeService = DisplayModeService(settingsService, FullscreenStateManager());
         await _displayModeService!.syncWithNative();
@@ -2124,6 +2186,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
       }
 
       final customMpvConfig = SettingsService.parseMpvConfigText(settingsService.read(SettingsService.mpvConfigText));
+      _appliedCustomMpvConfig = customMpvConfig;
       // Only the Linux video plane owns the four real mpv properties, so only
       // there are they withheld. Elsewhere nothing caches them and a config line
       // is the user's single way to reach them - dropping it would take away
@@ -2266,7 +2329,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     }
   }
 
-  /// Windows display mode matching service.
+  /// Desktop display mode matching service (Windows, macOS).
   DisplayModeService? _displayModeService;
 
   /// Android display frame-rate matching state (retry counter, applied
@@ -2327,10 +2390,14 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// Handle back button press. In a Watch Together room this leaves the
   /// player, not the room: the room stops waiting for this user, and a host's
   /// media stops for everyone.
+  ///
+  /// Still Watching interrupts an item mid-play, so Back only answers it. The
+  /// Play Next prompt stands for a finished item, so Back leaves (#2686);
+  /// the exit's shutdown cancels its countdown before any await.
   Future<void> _handleBackButton({bool navigateHome = false}) async {
     final acceptedExit = _routeExitOperation;
     if (acceptedExit != null) return acceptedExit;
-    if (!navigateHome && (_episode.showPlayNextDialog || _showStillWatchingPrompt)) {
+    if (!navigateHome && _showStillWatchingPrompt) {
       _dismissPlaybackPromptForBack();
       return;
     }
@@ -2394,6 +2461,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     // Before the overlays are shown below: the re-show callback that follows
     // must find no owner, or it would hide them again.
     ImmersiveModeGuard.release(this);
+    IphoneDuo.instance.restoreVerticalBarFor(this);
     final existing = _systemUiRestoreOperation;
     if (existing != null) return existing;
     if (_activeRouteGuard.identityFor(this) == null) return Future<void>.value();
@@ -2518,13 +2586,12 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     _releaseFullscreenListener?.call();
     _releaseFullscreenListener = null;
     FullscreenStateManager().endScope();
-    // Not _restoreWindowsDisplayMode(): that helper waits 200ms after clearing
-    // the HDR hint before restoring, which dispose() cannot do. Fire the hint
-    // clear at the still-live player and restore immediately.
-    if (!isReplacingWithVideo &&
-        Platform.isWindows &&
-        _displayModeService != null &&
-        _displayModeService!.anyChangeApplied) {
+    // Not _restoreDisplayMode(): that helper waits 200ms after clearing the
+    // Windows HDR hint before restoring, which dispose() cannot do. Fire the
+    // hint clear at the still-live player and restore immediately. Restore
+    // even with nothing applied yet: it makes a match still in flight undo
+    // itself when it lands.
+    if (!isReplacingWithVideo && _displayModeService != null) {
       if (_displayModeService!.hdrStateChanged && player != null) {
         final currentPlayer = player!;
         unawaited(() async {
@@ -2561,6 +2628,7 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
     // out; until then nobody owns it, and a stale owner would keep hiding
     // the bars on whatever screen comes next.
     ImmersiveModeGuard.release(this);
+    IphoneDuo.instance.restoreVerticalBarFor(this);
     if (!isReplacingWithVideo) {
       unawaited(_restoreSystemUiAndOrientation());
     }
@@ -2739,6 +2807,11 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// deliberately retries a 503 (see `_applyNetworkStreamTuning`), and a
   /// transient status must never mask the fatal one that follows.
   final Set<int> _fatalHttpStatuses = <int>{};
+
+  /// The HTTP 500 dialog's transcode was already tried for the item on
+  /// screen, so a further 500 shows the dialog without it. Cleared when an
+  /// in-place reload opens another item.
+  bool _serverLimitFallbackUsed = false;
 
   /// Bounds an open the server keeps answering with HTTP 503 — that loop
   /// otherwise never raises an error (#1830). Armed from [_onPlayerLog],

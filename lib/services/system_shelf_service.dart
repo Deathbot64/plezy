@@ -29,10 +29,7 @@ class SystemShelfService {
   static SystemShelfService? _testingInstance;
   factory SystemShelfService() => _testingInstance ?? _instance;
 
-  SystemShelfService._internal() : _channelOverride = null, _supportOverride = null, _tvosTargetOverride = null {
-    _androidChannel.setMethodCallHandler(_handleMethodCall);
-    _tvosChannel.setMethodCallHandler(_handleMethodCall);
-  }
+  SystemShelfService._internal() : _channelOverride = null, _supportOverride = null, _tvosTargetOverride = null;
 
   @visibleForTesting
   SystemShelfService.forTesting({
@@ -52,9 +49,23 @@ class SystemShelfService {
   final Future<bool> Function()? _supportOverride;
   final bool Function()? _tvosTargetOverride;
 
+  /// Decides whether a profile's session may publish. Installed by the
+  /// profile session root; null admits every session.
+  bool Function(String profileId)? publicationPolicy;
+
+  /// The profile whose session is open, published or withheld.
+  String? _sessionProfile;
+
+  /// The open session when [publicationPolicy] admits it, else null.
   String? _activeOwner;
   int _generation = 0;
   Future<void> _mutationTail = Future<void>.value();
+  final StreamController<String> _publicationResumed = StreamController<String>.broadcast();
+
+  /// Emits a profile whose open session [refreshPublicationPolicy] just
+  /// admitted after withholding it. Nothing of that profile is on the shelf,
+  /// so its publisher republishes.
+  Stream<String> get publicationResumed => _publicationResumed.stream;
 
   @visibleForTesting
   String? get debugActiveOwner => _activeOwner;
@@ -62,21 +73,20 @@ class SystemShelfService {
   @visibleForTesting
   int get debugGeneration => _generation;
 
-  /// Forgets the owner and drops the mutation queue. Deliberately does not
-  /// await the old tail: a widget test's FakeAsync zone ends without
-  /// flushing the microtasks that settle a chained future, so the previous
-  /// test's final clear would leave a tail that never completes and hang the
-  /// next test's setUp. Tests own their channel fakes, so nothing native is
-  /// lost by abandoning the chain.
+  /// Forgets the session, owner, and policy, and drops the mutation queue.
+  /// Deliberately does not await the old tail: a widget test's FakeAsync zone
+  /// ends without flushing the microtasks that settle a chained future, so
+  /// the previous test's final clear would leave a tail that never completes
+  /// and hang the next test's setUp. Tests own their channel fakes, so
+  /// nothing native is lost by abandoning the chain.
   @visibleForTesting
   void debugReset() {
+    publicationPolicy = null;
+    _sessionProfile = null;
     _activeOwner = null;
     _generation = 0;
     _mutationTail = Future<void>.value();
   }
-
-  /// Callback for warm-start launcher surface taps.
-  ValueChanged<String>? onShelfItemTap;
 
   /// Whether this process targets the tvOS Top Shelf (as opposed to the
   /// Android Watch Next row). Decides artwork geometry and which native
@@ -95,22 +105,9 @@ class SystemShelfService {
     return null;
   }
 
-  Future<dynamic> _handleMethodCall(MethodCall call) async {
-    if (call.method != 'onWatchNextTap' && call.method != 'onShelfItemTap') {
-      return null;
-    }
-    final args = call.arguments;
-    final contentId = args is Map ? args['contentId'] as String? : null;
-    final callback = onShelfItemTap;
-    if (contentId == null || callback == null) return false;
-    callback(contentId);
-    return true;
-  }
-
-  @visibleForTesting
-  Future<dynamic> handleMethodCallForTesting(MethodCall call) => _handleMethodCall(call);
-
-  /// Establishes the only owner allowed to publish launcher shelf state.
+  /// Opens [profileId]'s session, the only owner allowed to publish launcher
+  /// shelf state unless [publicationPolicy] withholds it. A withheld session
+  /// clears the shelf instead, including what an earlier launch published.
   ///
   /// Ownership changes are synchronous. Native mutations remain serialized
   /// behind any clear already queued for the previous owner.
@@ -118,15 +115,51 @@ class SystemShelfService {
     if (profileId.isEmpty) {
       throw ArgumentError.value(profileId, 'profileId', 'must not be empty');
     }
-    if (_activeOwner == profileId) return;
+    if (_sessionProfile == profileId) return;
+    _sessionProfile = profileId;
+    if (_mayPublish(profileId)) {
+      _admit(profileId);
+    } else {
+      unawaited(_revoke(profileId));
+    }
+  }
+
+  /// Closes [profileId]'s session synchronously, then clears its native shelf
+  /// after every already-dispatched mutation has settled.
+  Future<void> endProfileSession(String profileId) async {
+    if (_sessionProfile != profileId) return;
+    _sessionProfile = null;
+    // A withheld session cleared the shelf when it was withheld.
+    if (_activeOwner != profileId) return;
+    await _revoke(profileId);
+  }
+
+  /// Re-applies [publicationPolicy] to the open session after one of its
+  /// inputs changed: withholding clears the shelf, admitting announces
+  /// [publicationResumed].
+  void refreshPublicationPolicy() {
+    final profileId = _sessionProfile;
+    if (profileId == null) return;
+    final admitted = _activeOwner == profileId;
+    if (_mayPublish(profileId) == admitted) return;
+    if (admitted) {
+      unawaited(_revoke(profileId));
+    } else {
+      _admit(profileId);
+      _publicationResumed.add(profileId);
+    }
+  }
+
+  bool _mayPublish(String profileId) => publicationPolicy?.call(profileId) ?? true;
+
+  void _admit(String profileId) {
     _activeOwner = profileId;
     _generation++;
   }
 
-  /// Invalidates [profileId] synchronously, then clears its native shelf after
-  /// every already-dispatched mutation has settled.
-  Future<void> endProfileSession(String profileId) async {
-    if (_activeOwner != profileId) return;
+  /// Invalidates publication synchronously and queues a clear of the native
+  /// shelf. The fresh generation lets the clear supersede any owner.
+  Future<void> _revoke(String profileId) async {
     _activeOwner = null;
     final generation = ++_generation;
     await _enqueueMutation<void>(() async {
@@ -191,18 +224,6 @@ class SystemShelfService {
     return null;
   }
 
-  /// Get a pending deep link from cold start (consumed on first call).
-  Future<String?> getInitialDeepLink() async {
-    final channel = _channel;
-    if (channel == null) return null;
-    return _invokeGuarded<String>(
-      channel,
-      'getInitialDeepLink',
-      label: 'System shelf initial deep link failed',
-      failureLabel: 'Failed to get system shelf initial deep link',
-    );
-  }
-
   /// Check whether the current platform has a launcher shelf integration.
   Future<bool> isSupported() async {
     final override = _supportOverride;
@@ -224,6 +245,7 @@ class SystemShelfService {
     List<MediaItem> continueWatchingItems,
     MediaServerClient Function(ServerId serverId) getClientForServerId, {
     bool hideSpoilers = false,
+    EpisodePosterMode episodePosterMode = EpisodePosterMode.seriesPoster,
   }) async {
     final channel = _channel;
     if (channel == null || _activeOwner != profileId) return false;
@@ -231,7 +253,12 @@ class SystemShelfService {
 
     final items = continueWatchingItems
         .map((item) {
-          return _convertToShelfItem(item, getClientForServerId, hideSpoilers: hideSpoilers);
+          return _convertToShelfItem(
+            item,
+            getClientForServerId,
+            hideSpoilers: hideSpoilers,
+            episodePosterMode: episodePosterMode,
+          );
         })
         .toList(growable: false);
     if (!_owns(profileId, generation)) return false;
@@ -275,7 +302,11 @@ class SystemShelfService {
   /// Publish live server connection sources to the tvOS Top Shelf extension so
   /// it can fetch Continue Watching itself. tvOS-only: Android's Watch Next
   /// row is refreshed by the app process instead, so this is a no-op there.
-  Future<bool> syncServerSources(String profileId, List<MediaServerClient> clients) async {
+  Future<bool> syncServerSources(
+    String profileId,
+    List<MediaServerClient> clients, {
+    EpisodePosterMode episodePosterMode = EpisodePosterMode.seriesPoster,
+  }) async {
     if (!_isTvosTarget) return false;
     final channel = _channel;
     if (channel == null || _activeOwner != profileId) return false;
@@ -291,6 +322,7 @@ class SystemShelfService {
               'servers': servers,
               'maxItems': 20,
               'sectionTitle': t.discover.continueWatching,
+              'episodePoster': episodePosterMode == EpisodePosterMode.seasonPoster ? 'season' : 'series',
             }),
             label: 'Failed to update system shelf sources',
             severe: true,
@@ -299,6 +331,13 @@ class SystemShelfService {
     });
     return result ?? false;
   }
+
+  /// The Top Shelf fills 2:3 poster slots, so an episode shows its season
+  /// poster only when that is the viewer's episode poster setting. Every
+  /// other setting gets the series poster, as in Plex's own client (#2377):
+  /// an episode still cannot fill a poster slot.
+  static EpisodePosterMode _topShelfPosterMode(EpisodePosterMode mode) =>
+      mode == EpisodePosterMode.seasonPoster ? EpisodePosterMode.seasonPoster : EpisodePosterMode.seriesPoster;
 
   /// Backend-specific escape hatch: the Top Shelf extension talks to servers
   /// directly, which needs the raw connection credentials the neutral
@@ -349,7 +388,8 @@ class SystemShelfService {
   Map<String, dynamic> _convertToShelfItem(
     MediaItem item,
     MediaServerClient Function(ServerId serverId) getClientForServerId, {
-    bool hideSpoilers = false,
+    required bool hideSpoilers,
+    required EpisodePosterMode episodePosterMode,
   }) {
     final contentId = _buildContentId(serverIdOrNull(item.serverId), item.id);
 
@@ -359,10 +399,10 @@ class SystemShelfService {
         final client = getClientForServerId(ServerId(item.serverId!));
         String? thumbPath;
         if (_isTvosTarget) {
-          // The Top Shelf renders 2:3 posters via the season -> series -> own
-          // thumb chain. Posters cannot spoil, so the spoiler-safe override
-          // does not apply here.
-          thumbPath = item.posterThumb(mode: EpisodePosterMode.seasonPoster);
+          // The Top Shelf renders 2:3 posters: the series (or season) poster
+          // chain, then the item's own thumb. Posters cannot spoil, so the
+          // spoiler-safe override does not apply here.
+          thumbPath = item.posterThumb(mode: _topShelfPosterMode(episodePosterMode));
           if (thumbPath != null) {
             posterSourceUri = client.thumbnailUrl(thumbPath, width: 600, height: 900);
           }

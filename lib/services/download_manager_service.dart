@@ -46,13 +46,14 @@ typedef _NativeTaskForId = Future<Task?> Function(String taskId);
 typedef _NativeResumeTask = Future<bool> Function(DownloadTask task);
 typedef _EpisodeStorageDeletion = ({String? seasonDirUri, String? showDirUri});
 
-/// The background_downloader entry points the recovery path drives. Injected as a whole
-/// in tests so relocated-storage recovery can be exercised without platform channels.
+/// The background_downloader entry points the recovery and storage-exhaustion paths drive.
+/// Injected as a whole in tests so both can be exercised without platform channels.
 typedef NativeDownloaderOps = ({
   Future<List<Task>> Function() allTasks,
   Future<List<TaskRecord>> Function() allRecords,
   Future<void> Function(String taskId) deleteRecord,
   Future<bool> Function(Iterable<String> taskIds) cancelTaskIds,
+  Future<int> Function() resetGroup,
   Future<int> Function() cleanUpOrphanedTempFiles,
   Future<(List<Task>, List<Task>)> Function() rescheduleKilledTasks,
 });
@@ -321,6 +322,10 @@ class DownloadManagerService {
 
   bool get downloadsSupported => _downloadsSupportedOverride ?? platformDownloadsSupported;
 
+  /// Whether a storage failure has stopped the queue. Only an explicit user
+  /// request ([beginUserDownloadRequest], retry, resume) or a restart lifts it.
+  bool get queueBlockedByStorageFailure => _queueBlockedByStorageFailure;
+
   NativeDownloaderOps get _nativeOps =>
       _nativeOpsOverride ??
       (
@@ -328,6 +333,7 @@ class DownloadManagerService {
         allRecords: () => FileDownloader().database.allRecords(group: _downloadGroup),
         deleteRecord: FileDownloader().database.deleteRecordWithId,
         cancelTaskIds: FileDownloader().cancelTasksWithIds,
+        resetGroup: () => FileDownloader().reset(group: _downloadGroup),
         cleanUpOrphanedTempFiles: FileDownloader().cleanUpOrphanedTempFiles,
         rescheduleKilledTasks: FileDownloader().rescheduleKilledTasks,
       );
@@ -1249,18 +1255,19 @@ class DownloadManagerService {
   }
 
   /// Cancel [tasks] that target storage the app no longer owns and put a restartable
-  /// download back in the queue so it downloads again under the current location.
+  /// download back in the queue so it downloads again under the current location. The
+  /// row lets go of the tasks first, so their cancel updates read as stale.
   Future<void> _discardRelocatedNativeTasks(String globalKey, List<Task> tasks, DownloadedMediaItem? row) async {
     appLogger.i(
       'Discarding ${tasks.length} download task(s) for $globalKey targeting relocated storage: '
       '${tasks.map((task) => task.directory).toSet().join(', ')}',
     );
+    if (row != null) await _requeueRelocatedDownload(row.globalKey, row: row);
     await _cancelNativeTaskIds(
       globalKey,
       tasks.map((task) => task.taskId),
       reason: 'relocated app storage during recovery',
     );
-    if (row != null) await _requeueRelocatedDownload(row.globalKey, row: row);
   }
 
   /// Send a download whose bytes are stranded on a previous storage location back to the
@@ -1400,10 +1407,11 @@ class DownloadManagerService {
   }
 
   /// Drop every native task for [row], clear its progress, and put it back in
-  /// the queue so the next pass starts it from scratch.
+  /// the queue so the next pass starts it from scratch. The row lets go of its
+  /// task first, so the cancel's update reads as stale.
   Future<void> _resetAndRequeue(DownloadedMediaItem row, List<Task> tasks, {required String reason}) async {
-    await _cancelNativeTaskIds(row.globalKey, tasks.map((task) => task.taskId), reason: reason);
     await _database.updateBgTaskId(row.globalKey, null);
+    await _cancelNativeTaskIds(row.globalKey, tasks.map((task) => task.taskId), reason: reason);
     await _database.updateDownloadProgress(row.globalKey, 0, 0, 0);
     await _transitionStatus(row.globalKey, DownloadStatus.queued);
     await _database.addToQueue(mediaGlobalKey: row.globalKey);
@@ -1769,6 +1777,9 @@ class DownloadManagerService {
   /// Queue [metadata] for download. Returns the item actually stored —
   /// identical to [metadata] unless library stamping filled `libraryId`/
   /// `libraryTitle`, so the caller can keep its in-memory copy in sync.
+  ///
+  /// Does not lift a storage stop: the item waits behind it unless the caller
+  /// began an explicit request with [beginUserDownloadRequest].
   Future<MediaItem> queueDownload({
     required MediaItem metadata,
     required MediaServerClient client,
@@ -1778,7 +1789,6 @@ class DownloadManagerService {
     int mediaIndex = 0,
   }) async {
     if (_skipDownloadsUnsupported('queue download')) return metadata;
-    _rearmQueueForUserAction('new download');
 
     final globalKey = metadata.globalKey;
 
@@ -2573,7 +2583,7 @@ class DownloadManagerService {
           await _onDownloadPermanentlyFailed(globalKey, update.task.taskId, t.downloads.errorFileNotFound);
         case TaskStatus.canceled:
           if (_pausingKeys.contains(globalKey) || _cancellingKeys.contains(globalKey)) break;
-          await _onDownloadCanceled(globalKey, update.task.taskId);
+          await _onDownloadCanceledOutsideApp(globalKey, update.task.taskId);
         case TaskStatus.paused:
           appLogger.d('Download paused by system for $globalKey');
         case TaskStatus.waitingToRetry:
@@ -2594,7 +2604,7 @@ class DownloadManagerService {
     }
   }
 
-  /// Shared entry for terminal native-task callbacks (system cancel, failure):
+  /// Shared entry for terminal native-task callbacks (outside cancel, failure):
   /// ignores the event while [globalKey] is being cancelled or its completion is
   /// in flight, drops stale task sessions, then stops the timers and pending
   /// context of the download that is leaving the downloading state. Returns
@@ -2622,13 +2632,17 @@ class DownloadManagerService {
     return existing;
   }
 
-  /// Handle a system-initiated cancel — re-queue unless already completed.
-  Future<void> _onDownloadCanceled(String globalKey, String taskId) async {
-    if (await _claimTerminalEvent(globalKey, taskId, event: 'system cancellation') == null) return;
+  /// A cancel the app did not issue: Cancel on the downloader's notification,
+  /// or iOS cancelling the transfer after a force quit. The app's own cancels
+  /// flag the download or detach its task first, so they never get here. The
+  /// native side has already deleted the partial file, and the user asked for
+  /// the stop, so the download ends cancelled rather than starting over.
+  Future<void> _onDownloadCanceledOutsideApp(String globalKey, String taskId) async {
+    if (await _claimTerminalEvent(globalKey, taskId, event: 'cancellation outside the app') == null) return;
 
-    appLogger.w('Download cancelled by system for $globalKey, re-queuing');
+    appLogger.i('Download $globalKey was cancelled outside the app (task $taskId)');
     await _database.updateBgTaskId(globalKey, null);
-    await _requeueDownload(globalKey);
+    await _markCancelled(globalKey);
   }
 
   /// Re-arms the queue for a user action (new download, resume, retry): lifts a
@@ -2643,6 +2657,12 @@ class DownloadManagerService {
     _queueBlockedByStorageFailure = false;
   }
 
+  /// Re-arms the queue for an explicit download request. Call once per
+  /// request, before its items are queued: automatic enqueues (sync rules)
+  /// must not lift a storage stop, or every pass would retry the refused
+  /// file and stop all downloads again.
+  void beginUserDownloadRequest() => _rearmQueueForUserAction('new download');
+
   Future<void> _handleStorageFullFailure(String globalKey, String taskId, {String? message}) async {
     _queueBlockedByStorageFailure = true;
     for (final timer in _autoRetryTimers.values) {
@@ -2650,14 +2670,25 @@ class DownloadManagerService {
     }
     _autoRetryTimers.clear();
 
+    // Fail the rows before stopping the downloader: the reset reports every
+    // task it stops as canceled, and an update that still found its row
+    // downloading would end it as a user cancel without the storage error.
+    final errorMessage = message ?? t.downloads.storageFull;
+    final failedKeys = await _database.failActiveDownloadsForStorageFull(errorMessage);
+    for (final key in failedKeys) {
+      _cancelDownloadTimers(key);
+      _pendingDownloadContext.remove(key);
+      _emitProgress(key, DownloadStatus.failed, 0, errorMessage: errorMessage);
+    }
+
     if (downloadsSupported) {
       try {
-        await FileDownloader().database.deleteRecordWithId(taskId);
+        await _nativeOps.deleteRecord(taskId);
       } catch (error, stackTrace) {
         appLogger.w('Failed to discard partial download for $globalKey', error: error, stackTrace: stackTrace);
       }
       try {
-        await FileDownloader().reset(group: _downloadGroup);
+        await _nativeOps.resetGroup();
       } catch (error, stackTrace) {
         appLogger.w(
           'Failed to stop native download queue after storage exhaustion',
@@ -2665,14 +2696,6 @@ class DownloadManagerService {
           stackTrace: stackTrace,
         );
       }
-    }
-
-    final errorMessage = message ?? t.downloads.storageFull;
-    final failedKeys = await _database.failActiveDownloadsForStorageFull(errorMessage);
-    for (final key in failedKeys) {
-      _cancelDownloadTimers(key);
-      _pendingDownloadContext.remove(key);
-      _emitProgress(key, DownloadStatus.failed, 0, errorMessage: errorMessage);
     }
     appLogger.e('Download storage safety check stopped ${failedKeys.length} active download(s)');
   }
@@ -2848,9 +2871,12 @@ class DownloadManagerService {
       // Download was cancelled/deleted/retried by user during the delay
       return;
     }
+    // Stopping for storage cancels the retry timers, not a retry already past them.
+    if (_queueBlockedByStorageFailure) return;
 
     appLogger.i('Auto-retrying download for $globalKey');
     await _cleanupStaleDownload(globalKey);
+    if (_queueBlockedByStorageFailure) return;
     // The retry delay already throttles preparation failures; do not let the
     // immediate queue circuit breaker suppress the next scheduled attempt.
     _consecutiveQueueFailures = 0;
@@ -3572,14 +3598,14 @@ class DownloadManagerService {
 
   /// Cancel a download
   Future<void> cancelDownload(String globalKey) {
-    return _withCancellation(
-      globalKey,
-      reason: 'user cancellation',
-      body: () async {
-        await _transitionStatus(globalKey, DownloadStatus.cancelled);
-        await _database.removeFromQueue(globalKey);
-      },
-    );
+    return _withCancellation(globalKey, reason: 'user cancellation', body: () => _markCancelled(globalKey));
+  }
+
+  /// The state a cancel leaves a download in: kept, out of the queue, for the
+  /// user to retry or delete.
+  Future<void> _markCancelled(String globalKey) async {
+    await _transitionStatus(globalKey, DownloadStatus.cancelled);
+    await _database.removeFromQueue(globalKey);
   }
 
   /// Cancels native work before removing the durable row and reconciling its

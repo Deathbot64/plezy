@@ -11,6 +11,7 @@ import 'artist_discography.dart';
 import 'download_resolution.dart';
 import 'ids.dart';
 import 'library_filter_result.dart';
+import 'library_genre.dart';
 import 'library_change_event.dart';
 import 'library_query.dart';
 import 'live_tv_support.dart';
@@ -200,6 +201,13 @@ abstract class MediaServerClient {
   /// lists (movie vs show).
   Future<List<MediaSort>> fetchSortOptions(String libraryId, {String? libraryType});
 
+  /// The genres of [libraryId] its Browse tab can filter by, in display
+  /// order. Plex reads `/library/sections/{id}/categories`, which is already
+  /// scoped to the section's own type; Jellyfin and Emby read `/Genres`
+  /// scoped by [libraryKind] to the item type Browse lists, so every genre
+  /// selects at least one Browse row. Failures throw.
+  Future<List<LibraryGenre>> fetchLibraryGenres(String libraryId, {required MediaKind libraryKind});
+
   /// Queue a metadata refresh for [libraryId]. The id is the backend-native
   /// library identifier (Plex section id / Jellyfin view item id, both
   /// surfaced via [MediaLibrary.key]). Plex hits
@@ -208,6 +216,12 @@ abstract class MediaServerClient {
   /// library view is itself a Jellyfin item, and refresh recurses into its
   /// children).
   Future<void> refreshLibraryMetadata(String libraryId);
+
+  /// Queue a scan of [libraryId] for new, changed, and removed files, keeping
+  /// existing metadata. Plex hits `/library/sections/{id}/refresh`; MediaBrowser
+  /// servers post `/Items/{id}/Refresh` with `metadataRefreshMode=Default`
+  /// (jellyfin-web's "Scan for new and updated files").
+  Future<void> scanLibrary(String libraryId);
 
   /// Fetch a single item by its backend-opaque id. An online HTTP 404 returns
   /// `null`; every other HTTP status remains an error. Implementations may use
@@ -605,6 +619,13 @@ abstract class MediaServerClient {
   Future<bool> deleteCollection(MediaItem collection);
 
   /// Permanently delete [item] from the library.
+  ///
+  /// Plex carries out this DELETE even with the server's "Allow media
+  /// deletion" switch off (#2897), so `PlexClient` reads the switch again
+  /// immediately before sending it and throws [MediaDeletionRefusedException]
+  /// instead when the answer is anything but "allowed". Jellyfin/Emby need no
+  /// such client-side guard: the server checks `CanDelete` on the DELETE
+  /// itself and rejects it.
   Future<bool> deleteMediaItem(MediaItem item);
 
   /// File info (codec / resolution / bitrate / file path) for [item].
@@ -1004,15 +1025,18 @@ abstract interface class SeasonEpisodePagingClient {
 }
 
 /// Optional capability for clients whose server can answer "may the signed-in
-/// user delete *this* item?" per item.
+/// user delete *this* item right now?".
 ///
-/// Jellyfin-only by nature: `BaseItemDto.CanDelete` folds the global
-/// `EnableContentDeletion` grant, the per-library
-/// `EnableContentDeletionFromFolders` grant, and item state (virtual/missing
-/// files, in-progress recordings) into one server-computed boolean — none of
-/// which a client can reproduce. Plex exposes no per-item delete permission,
-/// so it deliberately does not implement this and callers keep using their
-/// account-level owner/admin gate for it.
+/// - Jellyfin/Emby answer per item: `BaseItemDto.CanDelete` folds the global
+///   `EnableContentDeletion` grant, the per-library
+///   `EnableContentDeletionFromFolders` grant, and item state (virtual/missing
+///   files, in-progress recordings) into one server-computed boolean — none of
+///   which a client can reproduce.
+/// - Plex answers with its server-wide "Allow media deletion" switch
+///   (`allowMediaDeletion` on the root MediaContainer). That switch says
+///   nothing about who may delete: Plex lets only the owning account delete
+///   even with it on, so callers combine the answer with their owner/admin
+///   gate rather than treating `true` as a grant on its own.
 abstract interface class MediaDeletionPermissionClient {
   /// `true`/`false` as reported by the server for [item], or `null` when the
   /// server did not answer (item not visible to this user, unexpected shape).

@@ -14,7 +14,6 @@ import 'package:flutter/gestures.dart'
         PointerUpEvent,
         kDoubleTapTimeout;
 import 'package:flutter/material.dart';
-import 'package:plezy/widgets/app_icon.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:rate_limiter/rate_limiter.dart';
 import 'package:flutter/services.dart'
@@ -80,6 +79,7 @@ import 'widgets/linux_keep_alive.dart';
 import 'widgets/mobile_edge_adjustment_indicator.dart';
 import 'widgets/mobile_skip_zones.dart';
 import 'widgets/skip_marker_button.dart';
+import 'widgets/screen_lock_overlay.dart';
 import 'widgets/track_chapter_controls.dart';
 import 'widgets/performance_overlay/performance_overlay.dart';
 import '../rasterized_gradient.dart';
@@ -297,6 +297,11 @@ class PlayerNavigationCoordinator {
   final PlayerChromeController chromeController;
   final bool Function() isPromptOpen;
   final VoidCallback dismissPrompt;
+
+  /// Whether the open prompt stands for a finished item (Play Next, which
+  /// only shows with playback parked at the end). Back then leaves the
+  /// player in one press instead of uncovering the dead last frame (#2686).
+  final bool Function() _backLeavesPrompt;
   final bool Function() isChromePresented;
   final Future<bool> Function() exitFullscreenIfActive;
   final bool Function() _physicalEscapeExitsFullscreen;
@@ -315,11 +320,13 @@ class PlayerNavigationCoordinator {
     required this.exitFullscreenIfActive,
     bool Function()? physicalEscapeExitsFullscreen,
     bool Function()? exitPlayerBeforeChrome,
+    bool Function()? backLeavesPrompt,
     required this.exitPlayer,
     required this.navigateHome,
     bool Function()? isActive,
   }) : _physicalEscapeExitsFullscreen = physicalEscapeExitsFullscreen ?? _alwaysTrue,
        _exitPlayerBeforeChrome = exitPlayerBeforeChrome ?? _alwaysFalse,
+       _backLeavesPrompt = backLeavesPrompt ?? _alwaysFalse,
        isActive = isActive ?? _alwaysActive;
 
   static bool _alwaysActive() => true;
@@ -332,7 +339,14 @@ class PlayerNavigationCoordinator {
       return;
     }
     if (isPromptOpen()) {
-      dismissPrompt();
+      // A physical Escape is Back unless it owns fullscreen, the same split
+      // [resolvePlayerBackDisposition] makes.
+      final isBack = navigationKey == PlayerNavigationKey.back || !_physicalEscapeExitsFullscreen();
+      if (isBack && _backLeavesPrompt()) {
+        exitPlayer();
+      } else {
+        dismissPrompt();
+      }
       return;
     }
     if (navigationKey == PlayerNavigationKey.back && _exitPlayerBeforeChrome()) {
@@ -599,9 +613,10 @@ class PlexVideoControls extends StatefulWidget {
   /// Called when back button is pressed (for Watch Together session leave confirmation)
   final VoidCallback? onBack;
 
-  /// Called when the video has effectively reached the end (e.g. credits extend
-  /// to EOF and can't be seeked past). Parent should route this into its normal
-  /// completion flow so the auto-play-next setting is honored.
+  /// Ends the item ahead of its file (credits extend to EOF and can't be
+  /// seeked past). The parent routes this into its normal completion flow so
+  /// the auto-play-next setting is honored. Null when the item has nothing
+  /// left to end (a Watch Together room already at its end).
   final void Function({required bool skipAutoPlayCountdown})? onReachedEnd;
 
   /// Whether the user can control playback (false in host-only mode for non-host).
@@ -768,6 +783,15 @@ class _PlexVideoControlsState extends State<PlexVideoControls>
   late bool _chaptersLoaded = widget.initialChapters != null;
   bool _isAlwaysOnTop = false;
   late final FocusNode _focusNode;
+
+  /// The chrome's own [FocusScope] node, owned here so drift onto it can be
+  /// answered; see [_onChromeScopeFocusChanged].
+  late final FocusScopeNode _chromeScopeNode;
+
+  /// A chrome control held focus when the first-frame gate closed, so the
+  /// open's [FirstFrameGuard] took it away from the remote; see
+  /// [_restoreChromeFocusAfterOpen].
+  bool _chromeFocusLostToFirstFrameGate = false;
   KeyboardShortcutsService? _keyboardService;
   // Live settings — read through the service so a change anywhere in the app
   // reflects here without a manual reload. UI rebuilds are wired via
@@ -783,8 +807,6 @@ class _PlexVideoControlsState extends State<PlexVideoControls>
   int get _subtitleSyncOffset => PlayerSyncOffsets.of(widget.player).subtitleMs;
   bool get _isRotationLocked => _settings.read(SettingsService.rotationLocked);
   bool _isScreenLocked = false; // Touch lock during playback
-  bool _showLockIcon = false; // Whether to show the lock overlay icon
-  Timer? _lockIconTimer;
   bool get _clickVideoTogglesPlayback => _settings.read(SettingsService.clickVideoTogglesPlayback);
   bool get _showChapterMarkersOnTimeline => _settings.read(SettingsService.showChapterMarkersOnTimeline);
   int _trafficLightVisibilityGeneration = 0;
@@ -917,6 +939,7 @@ class _PlexVideoControlsState extends State<PlexVideoControls>
       alsoOwns: (key) => !_showControls && (key.isLeftKey || key.isRightKey),
     );
     _skipMarkerFocusNode = FocusNode(debugLabel: 'SkipMarkerButton');
+    _chromeScopeNode = FocusScopeNode(debugLabel: 'PlayerChrome');
     _seekThrottle = throttle(
       (Duration pos) {
         unawaited(_seekToTimelinePosition(pos));
@@ -964,6 +987,7 @@ class _PlexVideoControlsState extends State<PlexVideoControls>
     bindEffect(SettingsService.skipIntroMode, (_) => _syncCurrentMarkerForCurrentPosition(), fireImmediately: false);
     bindEffect(SettingsService.skipCreditsMode, (_) => _syncCurrentMarkerForCurrentPosition(), fireImmediately: false);
     _releaseChromeListener = bindListenable(widget.chromeController, _onChromeChanged);
+    bindListenable(_chromeScopeNode, _onChromeScopeFocusChanged);
     _releaseSyncOffsetsListener = bindListenable(PlayerSyncOffsets.of(widget.player), _onSyncOffsetsChanged);
     _configureChromeController();
     widget.chromeController.setPlaying(widget.player.state.playing);
@@ -1077,6 +1101,11 @@ class _PlexVideoControlsState extends State<PlexVideoControls>
       _clearCurrentMarker();
       _loadPlaybackExtras();
     }
+    // Whether credits that run to the end have anywhere to skip to.
+    if ((oldWidget.onNext == null && oldWidget.onReachedEnd == null) !=
+        (widget.onNext == null && widget.onReachedEnd == null)) {
+      _syncCurrentMarkerForCurrentPosition();
+    }
     _configureChromeController();
   }
 
@@ -1086,7 +1115,6 @@ class _PlexVideoControlsState extends State<PlexVideoControls>
     _feedbackTimer?.cancel();
     _feedbackHideTimer?.cancel();
     _accumulatedSkipSeconds.dispose();
-    _lockIconTimer?.cancel();
     _edgeAdjustmentIndicatorHideTimer?.cancel();
     _edgeAdjustmentIndicatorClearTimer?.cancel();
     _edgeAdjustmentLifecycleListener?.dispose();
@@ -1113,6 +1141,7 @@ class _PlexVideoControlsState extends State<PlexVideoControls>
     _rateSubscription?.cancel();
     _focusNode.dispose();
     _skipMarkerFocusNode.dispose();
+    _chromeScopeNode.dispose();
     _fallbackHasFirstFrame.dispose();
     // Restore original rate if long-press was active when disposed
     if (_isLongPressing && _rateBeforeLongPress != null) {
@@ -1256,8 +1285,15 @@ class _PlexVideoControlsState extends State<PlexVideoControls>
                         : IgnorePointer(
                             ignoring: !_showControls,
                             child: FocusScope(
+                              node: _chromeScopeNode,
                               // Prevent focus from entering controls when hidden
                               canRequestFocus: _showControls,
+                              // Explicit: left null, the widget reads it back from
+                              // the supplied node, whose scope getter folds in
+                              // canRequestFocus, so a rebuild while hiding would
+                              // write `false` back and keep the controls
+                              // unfocusable after the chrome returns.
+                              descendantsAreFocusable: true,
                               child: AnimatedOpacity(
                                 opacity: _controlsOpaque ? 1.0 : 0.0,
                                 duration: const Duration(milliseconds: 200),
@@ -1483,46 +1519,16 @@ class _PlexVideoControlsState extends State<PlexVideoControls>
                           opacity: performanceOverlayVisible ? 1.0 : 0.0,
                           duration: const Duration(milliseconds: 200),
                           child: IgnorePointer(
-                            child: PlayerPerformanceOverlay(player: widget.player, active: performanceOverlayVisible),
-                          ),
-                        ),
-                      ),
-                    ),
-                  if (_isScreenLocked)
-                    Positioned.fill(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () {
-                          setState(() => _showLockIcon = true);
-                          _startLockIconHideTimer();
-                        },
-                        onLongPress: _unlockScreen,
-                        child: AnimatedOpacity(
-                          opacity: _showLockIcon ? 1.0 : 0.0,
-                          duration: const Duration(milliseconds: 200),
-                          child: Center(
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.6),
-                                borderRadius: const BorderRadius.all(Radius.circular(28)),
-                              ),
-                              child: Row(
-                                mainAxisSize: .min,
-                                children: [
-                                  const AppIcon(Symbols.lock_rounded, fill: 1, color: Colors.white, size: 20),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    t.videoControls.longPressToUnlock,
-                                    style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: .w500),
-                                  ),
-                                ],
-                              ),
+                            child: PlayerPerformanceOverlay(
+                              player: widget.player,
+                              active: performanceOverlayVisible,
+                              isTranscoding: widget.isLive || widget.isOfflinePlayback ? null : widget.isTranscoding,
                             ),
                           ),
                         ),
                       ),
                     ),
+                  if (_isScreenLocked) Positioned.fill(child: ScreenLockOverlay(onUnlock: _unlockScreen)),
                 ],
               ),
             ),

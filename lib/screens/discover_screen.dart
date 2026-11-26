@@ -8,6 +8,7 @@ import 'package:plezy/widgets/app_icon.dart';
 import '../widgets/server_activities_button.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:provider/provider.dart';
+import '../focus/covered_route_focus_boundary.dart';
 import '../focus/focusable_action_bar.dart';
 import '../focus/hub_vertical_navigation.dart';
 import '../focus/locked_hub_controller.dart';
@@ -23,6 +24,7 @@ import '../utils/content_utils.dart';
 import '../widgets/cycling_media_backdrop.dart';
 import '../widgets/hero_carousel_backdrop.dart';
 import '../widgets/optimized_media_image.dart' show ClearLogoImage, blurArtwork;
+import '../widgets/rasterized_gradient.dart';
 import '../widgets/toolbar_scrim.dart';
 import '../widgets/system_clock.dart';
 import '../providers/discover_provider.dart';
@@ -108,7 +110,13 @@ class _DiscoverScreenState extends State<DiscoverScreen>
   bool _initialLoadComplete = false;
   bool _pendingTvBrowseRailFocus = false;
 
-  /// Primary focus when the rail claim was armed; see [_railClaimAbandoned].
+  /// The armed rail claim is the screen's first focus (its initial load),
+  /// which a root route covering the session holds for the uncover instead of
+  /// dropping; see [TvBrowseRailState.requestInitialFocus].
+  bool _pendingTvBrowseRailFocusIsInitial = false;
+
+  /// Primary focus when the rail claim was armed, or the stand-in it parked
+  /// on; see [_railClaimAbandoned] and [_parkRailClaim].
   FocusNode? _railClaimFocusOrigin;
 
   GlobalKey<HubSectionState>? _continueWatchingHubKey;
@@ -121,6 +129,10 @@ class _DiscoverScreenState extends State<DiscoverScreen>
   final _actionBarKey = GlobalKey<FocusableActionBarState>();
   final _serverActivitiesButtonKey = GlobalKey<ServerActivitiesButtonState>();
   final _userMenuKey = GlobalKey<AppMenuButtonState<String>>();
+
+  /// The TV error state's Retry action, focusable by the rail claim and the
+  /// toolbar's Down handoff.
+  final _tvRetryFocusNode = FocusNode(debugLabel: 'discover_tv_retry');
 
   /// Backend-neutral hero client lookup. Returns the actual
   /// [MediaServerClient] for the item's server (Plex or Jellyfin) so
@@ -235,7 +247,13 @@ class _DiscoverScreenState extends State<DiscoverScreen>
 
   void _focusContentFromAppBar() {
     if (PlatformDetector.isTV()) {
-      _focusTvBrowseRailWhenReady(immediate: true);
+      // Without a rail, Down reaches Retry on error and is a no-op on an empty
+      // Home; arming a claim here would later snap focus off the toolbar.
+      if (_tvBrowseHubs.isNotEmpty) {
+        _focusTvBrowseRailWhenReady(immediate: true);
+      } else if (_errorMessage != null) {
+        _tvRetryFocusNode.requestFocus();
+      }
       return;
     }
 
@@ -250,7 +268,7 @@ class _DiscoverScreenState extends State<DiscoverScreen>
     }
   }
 
-  void _focusTvBrowseRailWhenReady({bool immediate = false}) {
+  void _focusTvBrowseRailWhenReady({bool immediate = false, bool initial = false}) {
     if (!PlatformDetector.isTV()) return;
     if (!_isTabVisible || !(ModalRoute.of(context)?.isCurrent ?? false)) {
       _pendingTvBrowseRailFocus = false;
@@ -258,12 +276,12 @@ class _DiscoverScreenState extends State<DiscoverScreen>
     }
 
     _pendingTvBrowseRailFocus = true;
+    _pendingTvBrowseRailFocusIsInitial = initial;
     _railClaimFocusOrigin = FocusManager.instance.primaryFocus;
     if (immediate && _tvBrowseHubs.isNotEmpty) {
       final rail = _tvBrowseRailKey.currentState;
       if (rail != null) {
-        _pendingTvBrowseRailFocus = false;
-        rail.requestFocus();
+        _claimTvBrowseRail(rail);
         return;
       }
     }
@@ -274,31 +292,73 @@ class _DiscoverScreenState extends State<DiscoverScreen>
         _pendingTvBrowseRailFocus = false;
         return;
       }
-      if (_tvBrowseHubs.isEmpty) return;
+      if (_tvBrowseHubs.isEmpty) {
+        _parkRailClaim();
+        return;
+      }
       final rail = _tvBrowseRailKey.currentState;
       if (rail == null) return;
-      _pendingTvBrowseRailFocus = false;
-      rail.requestFocus();
+      _claimTvBrowseRail(rail);
     });
+  }
+
+  void _claimTvBrowseRail(TvBrowseRailState rail) {
+    _pendingTvBrowseRailFocus = false;
+    if (_pendingTvBrowseRailFocusIsInitial) {
+      rail.requestInitialFocus();
+    } else {
+      rail.requestFocus();
+    }
+  }
+
+  /// While the rail has nothing to show, rest the armed claim on the control
+  /// standing in for it — Retry on error, otherwise the toolbar, which holds
+  /// the profile menu (#3117) — and keep it armed so hubs landing later still
+  /// take focus. A spinner has nothing to rest on, so the claim just waits.
+  void _parkRailClaim() {
+    final FocusNode? node;
+    if (_errorMessage != null) {
+      node = _tvRetryFocusNode;
+    } else if (_isLoading || _areHubsLoading) {
+      return;
+    } else {
+      node = _actionBarKey.currentState?.firstEnabledFocusNode;
+    }
+    if (node == null || node.context == null) return;
+    if (_pendingTvBrowseRailFocusIsInitial) {
+      CoveredRouteFocusBoundary.requestInitialFocus(context, node);
+    } else {
+      node.requestFocus();
+    }
+    // A request held under a covering route leaves focus where the claim was
+    // armed; that stays the origin until the cover lifts and replays it.
+    if (node.canRequestFocus) _railClaimFocusOrigin = node;
+  }
+
+  /// Retry leaves the tree as soon as the pass starts, so arm the rail claim
+  /// first: whatever replaces it — the rail, Retry again, or the toolbar on an
+  /// empty result — inherits focus.
+  void _retryTvLoad() {
+    _focusTvBrowseRailWhenReady();
+    unawaited(_discover.load());
   }
 
   /// A rail-focus request stays armed while the rail has no hubs to focus
   /// (empty first load), so hubs landing later still receive it. It must not
   /// outlive the user's own navigation: hubs arriving minutes later would
-  /// yank the remote off a sidebar item the user has since moved to.
+  /// yank the remote off a control the user has since moved to — a sidebar
+  /// item, or the profile menu on the toolbar the claim parked on.
   ///
   /// Where focus *sits* cannot tell those apart — MainScreen hands a tab over
   /// while focus is still on the sidebar item that selected it, and that
   /// request is as live as one made from a bare scope. What distinguishes a
-  /// stale claim is that focus *moved* after the request was armed and now
-  /// rests on a control off this screen. A bare scope — MainScreen's content
-  /// scope before any child has focus — is "nowhere yet", not a destination.
+  /// stale claim is that focus *moved* off the node it was armed or parked
+  /// on. A bare scope — MainScreen's content scope before any child has
+  /// focus — is "nowhere yet", not a destination.
   bool get _railClaimAbandoned {
     final node = FocusManager.instance.primaryFocus;
-    if (identical(node, _railClaimFocusOrigin)) return false;
-    final focusContext = node?.context;
-    if (node == null || node is FocusScopeNode || focusContext == null) return false;
-    return !identical(focusContext.findAncestorStateOfType<_DiscoverScreenState>(), this);
+    if (node == null || node is FocusScopeNode || node.context == null) return false;
+    return !identical(node, _railClaimFocusOrigin);
   }
 
   void _applyPendingTvBrowseRailFocus() {
@@ -307,7 +367,7 @@ class _DiscoverScreenState extends State<DiscoverScreen>
       _pendingTvBrowseRailFocus = false;
       return;
     }
-    _focusTvBrowseRailWhenReady();
+    _focusTvBrowseRailWhenReady(initial: _pendingTvBrowseRailFocusIsInitial);
   }
 
   /// Handle vertical navigation between hubs
@@ -383,11 +443,15 @@ class _DiscoverScreenState extends State<DiscoverScreen>
       _heroFocusNode.requestFocus();
     }
 
-    // On initial load, focus content so the user doesn't start on the toolbar
+    // On initial load, focus content so the user doesn't start on the toolbar.
+    // TV also claims once the first pass settles without content — the claim
+    // then parks on Retry or the toolbar — since an empty Home otherwise
+    // leaves the D-pad nothing to focus (#3117).
     if (!_initialLoadComplete) {
-      if (PlatformDetector.isTV() && (_onDeck.isNotEmpty || _hubs.isNotEmpty)) {
+      final hasContent = _onDeck.isNotEmpty || _hubs.isNotEmpty;
+      if (PlatformDetector.isTV() && (hasContent || (!_isLoading && !_areHubsLoading))) {
         _initialLoadComplete = true;
-        _focusTvBrowseRailWhenReady();
+        _focusTvBrowseRailWhenReady(initial: true);
       } else if (!PlatformDetector.isTV() && _onDeck.isNotEmpty) {
         _initialLoadComplete = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -461,6 +525,7 @@ class _DiscoverScreenState extends State<DiscoverScreen>
     _scrollController.dispose();
     _heroFocusNode.removeListener(_onHeroFocusChanged);
     _heroFocusNode.dispose();
+    _tvRetryFocusNode.dispose();
     super.dispose();
   }
 
@@ -836,19 +901,23 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                           onPressed: openWatchTogether,
                           tooltip: t.watchTogether.title,
                         ),
+                        // Badges sit over the button they label, so they must
+                        // not swallow its hover and clicks (#2846).
                         if (watchTogether.isInSession && watchTogether.participantCount > 1)
                           Positioned(
                             top: 6,
                             right: 6,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                              decoration: BoxDecoration(
-                                color: colorScheme.primary,
-                                borderRadius: const BorderRadius.all(Radius.circular(8)),
-                              ),
-                              child: Text(
-                                '${watchTogether.participantCount}',
-                                style: TextStyle(color: colorScheme.onPrimary, fontSize: 10, fontWeight: .bold),
+                            child: IgnorePointer(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                                decoration: BoxDecoration(
+                                  color: colorScheme.primary,
+                                  borderRadius: const BorderRadius.all(Radius.circular(8)),
+                                ),
+                                child: Text(
+                                  '${watchTogether.participantCount}',
+                                  style: TextStyle(color: colorScheme.onPrimary, fontSize: 10, fontWeight: .bold),
+                                ),
                               ),
                             ),
                           ),
@@ -873,13 +942,15 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                           Positioned(
                             top: 6,
                             right: 6,
-                            child: Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: Colors.green,
-                                shape: BoxShape.circle,
-                                border: Border.fromBorderSide(BorderSide(color: foregroundColor, width: 1)),
+                            child: IgnorePointer(
+                              child: Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  color: Colors.green,
+                                  shape: BoxShape.circle,
+                                  border: Border.fromBorderSide(BorderSide(color: foregroundColor, width: 1)),
+                                ),
                               ),
                             ),
                           ),
@@ -1121,8 +1192,10 @@ class _DiscoverScreenState extends State<DiscoverScreen>
             ErrorStateWidget(
               message: _errorMessage!,
               icon: Symbols.error_outline_rounded,
-              onRetry: _discover.load,
-              actionAutofocus: true,
+              onRetry: _retryTvLoad,
+              actionFocusNode: _tvRetryFocusNode,
+              onActionNavigateUp: _focusTopActions,
+              onActionNavigateLeft: _navigateToSidebar,
               actionUseBackgroundFocus: true,
             ),
           if (!_isLoading && _errorMessage == null && browseHubs.isEmpty && !_areHubsLoading)
@@ -1151,15 +1224,17 @@ class _DiscoverScreenState extends State<DiscoverScreen>
     final isTv = PlatformDetector.isTV();
     final viewportHeight = MediaQuery.sizeOf(context).height;
     final isLandscape = MediaQuery.orientationOf(context) == Orientation.landscape;
-    // Mobile keeps its fixed hero, except that a landscape phone is shorter
-    // than the hero itself; fill the viewport there and let the item compact.
+    // Mobile keeps its fixed hero, except where that would swamp the screen.
+    // A landscape phone is shorter than the hero itself: fill the viewport
+    // and let the item compact. A short portrait viewport (iPhone Duo, compact
+    // phones) caps it at about two thirds so the first hub row still shows.
     final heroHeight = isTv
         ? viewportHeight * 0.82
         : useSideNav
         ? viewportHeight * 0.75
         : isLandscape
         ? math.min(500 + statusBarHeight, viewportHeight)
-        : 500 + statusBarHeight;
+        : math.min(500 + statusBarHeight, viewportHeight * 0.65);
     return SliverToBoxAdapter(
       child: Focus(
         focusNode: _heroFocusNode,
@@ -1192,87 +1267,92 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                   bottom: 16,
                   left: -26,
                   right: 0,
-                  child: Row(
-                    mainAxisAlignment: .center,
-                    children: [
-                      // Pause/Play button
-                      ClickableCursor(
-                        child: GestureDetector(
-                          onTap: () {
-                            if (_isAutoScrollPaused) {
-                              _resumeAutoScroll();
-                            } else {
-                              _pauseAutoScroll();
-                            }
-                          },
-                          child: AppIcon(
-                            _isAutoScrollPaused ? Symbols.play_arrow_rounded : Symbols.pause_rounded,
-                            fill: 1,
-                            color: Theme.of(context).colorScheme.onSurface,
-                            size: 18,
-                            semanticLabel: _isAutoScrollPaused
-                                ? t.accessibility.autoScrollPlay
-                                : t.accessibility.autoScrollPause,
+                  // Centered on the same safe width as the hero item above it.
+                  child: SafeArea(
+                    top: false,
+                    bottom: false,
+                    child: Row(
+                      mainAxisAlignment: .center,
+                      children: [
+                        // Pause/Play button
+                        ClickableCursor(
+                          child: GestureDetector(
+                            onTap: () {
+                              if (_isAutoScrollPaused) {
+                                _resumeAutoScroll();
+                              } else {
+                                _pauseAutoScroll();
+                              }
+                            },
+                            child: AppIcon(
+                              _isAutoScrollPaused ? Symbols.play_arrow_rounded : Symbols.pause_rounded,
+                              fill: 1,
+                              color: Theme.of(context).colorScheme.onSurface,
+                              size: 18,
+                              semanticLabel: _isAutoScrollPaused
+                                  ? t.accessibility.autoScrollPlay
+                                  : t.accessibility.autoScrollPause,
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      ValueListenableBuilder<int>(
-                        valueListenable: _heroIndex,
-                        builder: (context, heroIndex, _) {
-                          final range = _getVisibleDotRange();
-                          return Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: List.generate(range.end - range.start + 1, (i) {
-                              final index = range.start + i;
-                              final isActive = heroIndex == index;
-                              final dotSize = _getDotSize(index, range.start, range.end);
+                        const SizedBox(width: 8),
+                        ValueListenableBuilder<int>(
+                          valueListenable: _heroIndex,
+                          builder: (context, heroIndex, _) {
+                            final range = _getVisibleDotRange();
+                            return Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: List.generate(range.end - range.start + 1, (i) {
+                                final index = range.start + i;
+                                final isActive = heroIndex == index;
+                                final dotSize = _getDotSize(index, range.start, range.end);
 
-                              return isActive
-                                  ? ValueListenableBuilder<double>(
-                                      valueListenable: _indicatorProgress,
-                                      builder: (context, progress, child) {
-                                        final maxWidth = dotSize * 3;
-                                        final fillWidth = dotSize + ((maxWidth - dotSize) * progress);
-                                        final onSurface = Theme.of(context).colorScheme.onSurface;
-                                        return Container(
-                                          margin: const EdgeInsets.symmetric(horizontal: 4),
-                                          width: maxWidth,
-                                          height: dotSize,
-                                          decoration: BoxDecoration(
-                                            color: onSurface.withValues(alpha: 0.4),
-                                            borderRadius: BorderRadius.circular(dotSize / 2),
-                                          ),
-                                          child: Align(
-                                            alignment: .centerLeft,
-                                            child: Container(
-                                              width: fillWidth,
-                                              height: dotSize,
-                                              decoration: BoxDecoration(
-                                                color: onSurface,
-                                                borderRadius: BorderRadius.circular(dotSize / 2),
+                                return isActive
+                                    ? ValueListenableBuilder<double>(
+                                        valueListenable: _indicatorProgress,
+                                        builder: (context, progress, child) {
+                                          final maxWidth = dotSize * 3;
+                                          final fillWidth = dotSize + ((maxWidth - dotSize) * progress);
+                                          final onSurface = Theme.of(context).colorScheme.onSurface;
+                                          return Container(
+                                            margin: const EdgeInsets.symmetric(horizontal: 4),
+                                            width: maxWidth,
+                                            height: dotSize,
+                                            decoration: BoxDecoration(
+                                              color: onSurface.withValues(alpha: 0.4),
+                                              borderRadius: BorderRadius.circular(dotSize / 2),
+                                            ),
+                                            child: Align(
+                                              alignment: .centerLeft,
+                                              child: Container(
+                                                width: fillWidth,
+                                                height: dotSize,
+                                                decoration: BoxDecoration(
+                                                  color: onSurface,
+                                                  borderRadius: BorderRadius.circular(dotSize / 2),
+                                                ),
                                               ),
                                             ),
-                                          ),
-                                        );
-                                      },
-                                    )
-                                  : AnimatedContainer(
-                                      duration: tokens(context).slow,
-                                      curve: Curves.easeInOut,
-                                      margin: const EdgeInsets.symmetric(horizontal: 4),
-                                      width: dotSize,
-                                      height: dotSize,
-                                      decoration: BoxDecoration(
-                                        color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.4),
-                                        borderRadius: BorderRadius.circular(dotSize / 2),
-                                      ),
-                                    );
-                            }),
-                          );
-                        },
-                      ),
-                    ],
+                                          );
+                                        },
+                                      )
+                                    : AnimatedContainer(
+                                        duration: tokens(context).slow,
+                                        curve: Curves.easeInOut,
+                                        margin: const EdgeInsets.symmetric(horizontal: 4),
+                                        width: dotSize,
+                                        height: dotSize,
+                                        decoration: BoxDecoration(
+                                          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.4),
+                                          borderRadius: BorderRadius.circular(dotSize / 2),
+                                        ),
+                                      );
+                              }),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
                   ),
                 ),
             ],
@@ -1323,7 +1403,10 @@ class _DiscoverScreenState extends State<DiscoverScreen>
               ),
             ),
           ),
-          // Gradient Overlay - blends into scaffold background
+          // Gradient Overlay - blends into scaffold background. Rasterised:
+          // Impeller's GLES gradient shader over the artwork pushed raster
+          // frames past 30ms while scrolling a full-size Linux window; the
+          // strip texture keeps the hero at flat-quad cost (~2ms).
           Positioned(
             top: 0,
             left: 0,
@@ -1332,17 +1415,15 @@ class _DiscoverScreenState extends State<DiscoverScreen>
             child: Builder(
               builder: (context) {
                 final bgColor = Theme.of(context).scaffoldBackgroundColor;
-                return Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      // Reach full bg before the bottom edge so the hero
-                      // blends seamlessly into the content below and the
-                      // page dots sit on a solid band.
-                      colors: [Colors.transparent, bgColor.withValues(alpha: 0.9), bgColor, bgColor],
-                      stops: isTv ? const [0.25, 0.78, 0.94, 1.0] : const [0.5, 0.85, 0.94, 1.0],
-                    ),
+                return RasterizedGradient(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    // Reach full bg before the bottom edge so the hero
+                    // blends seamlessly into the content below and the
+                    // page dots sit on a solid band.
+                    colors: [bgColor.withValues(alpha: 0), bgColor.withValues(alpha: 0.9), bgColor, bgColor],
+                    stops: isTv ? const [0.25, 0.78, 0.94, 1.0] : const [0.5, 0.85, 0.94, 1.0],
                   ),
                 );
               },
@@ -1386,8 +1467,9 @@ class _DiscoverScreenState extends State<DiscoverScreen>
     final alignLeft = isTv || isLargeScreen;
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    // A landscape phone hands the hero the whole ~400dp viewport; the usual
-    // logo and bottom offset would push the content up into the top bar.
+    // A landscape phone hands the hero its whole ~400dp viewport, and a short
+    // portrait one its capped height; the usual logo and bottom offset would
+    // push the content up into the top bar.
     final compact = !isTv && heroHeight < 450;
     final heroLogoWidth = isTv ? TvLayoutConstants.heroLogoWidth : 400.0;
     final heroLogoHeight = isTv
@@ -1426,12 +1508,14 @@ class _DiscoverScreenState extends State<DiscoverScreen>
             fit: StackFit.expand,
             clipBehavior: Clip.none,
             children: [
-              // Content with responsive alignment
+              // Content with responsive alignment. Compact trims the offset
+              // but still clears the page indicator row (bottom 16, ~18 tall)
+              // that sits over every handheld hero.
               Positioned(
                 bottom: isTv
                     ? 88
                     : compact
-                    ? 24
+                    ? 44
                     : isLargeScreen
                     ? 80
                     : 50,

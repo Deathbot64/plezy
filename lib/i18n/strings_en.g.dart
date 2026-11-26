@@ -94,6 +94,7 @@ class Translations with BaseTranslations<AppLocale, Translations> {
 	late final Translations$seerr$en seerr = Translations$seerr$en.internal(_root);
 	late final Translations$services$en services = Translations$services$en.internal(_root);
 	late final Translations$addServer$en addServer = Translations$addServer$en.internal(_root);
+	late final Translations$deepLinks$en deepLinks = Translations$deepLinks$en.internal(_root);
 }
 
 // Path: app
@@ -125,11 +126,11 @@ class Translations$appIcon$en {
 	/// en: 'Current icon'
 	String get current => 'Current icon';
 
-	/// en: 'Supporter perk'
-	String get locked => 'Supporter perk';
+	/// en: 'Part of the Theme & Icon Pack'
+	String get locked => 'Part of the Theme & Icon Pack';
 
-	/// en: 'Alternate icons are a Supporter perk.'
-	String get lockedHint => 'Alternate icons are a Supporter perk.';
+	/// en: 'Alternate icons are part of the Theme & Icon Pack.'
+	String get lockedHint => 'Alternate icons are part of the Theme & Icon Pack.';
 
 	/// en: 'Couldn't change the app icon'
 	String get changeFailed => 'Couldn\'t change the app icon';
@@ -425,11 +426,11 @@ class Translations$supporter$en {
 
 	// Translations
 
-	/// en: 'Plezy Supporter'
-	String get title => 'Plezy Supporter';
+	/// en: 'Theme & Icon Pack'
+	String get title => 'Theme & Icon Pack';
 
-	/// en: 'A one-time purchase that supports Plezy's development and unlocks cosmetic extras:'
-	String get intro => 'A one-time purchase that supports Plezy\'s development and unlocks cosmetic extras:';
+	/// en: 'An optional one-time purchase that adds cosmetic extras:'
+	String get intro => 'An optional one-time purchase that adds cosmetic extras:';
 
 	/// en: 'Preset themes'
 	String get presetThemes => 'Preset themes';
@@ -461,11 +462,11 @@ class Translations$supporter$en {
 	/// en: 'Your purchase is waiting for payment or approval. The extras unlock as soon as the store completes it.'
 	String get pending => 'Your purchase is waiting for payment or approval. The extras unlock as soon as the store completes it.';
 
-	/// en: 'Thank you for supporting Plezy'
-	String get thankYouTitle => 'Thank you for supporting Plezy';
+	/// en: 'Thanks for your purchase'
+	String get thankYouTitle => 'Thanks for your purchase';
 
-	/// en: 'Your Supporter extras are unlocked.'
-	String get thankYouBody => 'Your Supporter extras are unlocked.';
+	/// en: 'The Theme & Icon Pack is unlocked.'
+	String get thankYouBody => 'The Theme & Icon Pack is unlocked.';
 
 	/// en: 'Unlock themes and app icons with a one-time purchase'
 	String get tileSubtitle => 'Unlock themes and app icons with a one-time purchase';
@@ -473,8 +474,8 @@ class Translations$supporter$en {
 	/// en: 'Unlock themes with a one-time purchase'
 	String get tileSubtitleThemesOnly => 'Unlock themes with a one-time purchase';
 
-	/// en: 'Thank you for your support'
-	String get tileUnlocked => 'Thank you for your support';
+	/// en: 'Unlocked — thanks for your purchase'
+	String get tileUnlocked => 'Unlocked — thanks for your purchase';
 
 	late final Translations$supporter$errors$en errors = Translations$supporter$errors$en.internal(_root);
 }
@@ -1474,6 +1475,9 @@ class Translations$settings$en {
 	/// en: 'Aspect Ratio'
 	String get scopeAspectRatio => 'Aspect Ratio';
 
+	/// en: 'Zoom'
+	String get scopeZoom => 'Zoom';
+
 	/// en: 'Audio & Subtitle Sync'
 	String get scopeSyncOffsets => 'Audio & Subtitle Sync';
 
@@ -1519,11 +1523,11 @@ class Translations$themeEditor$en {
 	/// en: 'Choose every color yourself'
 	String get editCustomDescription => 'Choose every color yourself';
 
-	/// en: 'Unlock with Supporter'
-	String get locked => 'Unlock with Supporter';
+	/// en: 'Unlock with the Theme & Icon Pack'
+	String get locked => 'Unlock with the Theme & Icon Pack';
 
-	/// en: 'Saved — unlocks with Supporter'
-	String get savedLocked => 'Saved — unlocks with Supporter';
+	/// en: 'Saved — unlocks with the Theme & Icon Pack'
+	String get savedLocked => 'Saved — unlocks with the Theme & Icon Pack';
 
 	/// en: 'Custom Theme'
 	String get title => 'Custom Theme';
@@ -2095,6 +2099,9 @@ class Translations$mediaMenu$en {
 	/// en: 'Failed to delete media item'
 	String get mediaFailedToDelete => 'Failed to delete media item';
 
+	/// en: 'Media deletion is turned off on this server. Turn on "Allow media deletion" in the server's Library settings.'
+	String get mediaDeletionDisabledOnServer => 'Media deletion is turned off on this server. Turn on "Allow media deletion" in the server\'s Library settings.';
+
 	/// en: 'Rate'
 	String get rate => 'Rate';
 
@@ -2425,8 +2432,11 @@ class Translations$videoControls$en {
 	/// en: 'Screen lock'
 	String get screenLockButton => 'Screen lock';
 
-	/// en: 'Long press to unlock'
-	String get longPressToUnlock => 'Long press to unlock';
+	/// en: 'Tap to unlock'
+	String get tapToUnlock => 'Tap to unlock';
+
+	/// en: 'Tap again to unlock'
+	String get tapAgainToUnlock => 'Tap again to unlock';
 
 	/// en: 'Video timeline'
 	String get timelineSlider => 'Video timeline';
@@ -2489,6 +2499,9 @@ class Translations$videoControls$en {
 
 	/// en: 'Failed to download subtitle'
 	String get subtitleDownloadFailed => 'Failed to download subtitle';
+
+	/// en: 'The subtitle didn't appear in time. The download may have failed'
+	String get subtitleDownloadTimedOut => 'The subtitle didn\'t appear in time. The download may have failed';
 
 	/// en: 'Search languages...'
 	String get searchLanguages => 'Search languages...';
@@ -2681,6 +2694,9 @@ class Translations$messages$en {
 
 	/// en: 'Server error (HTTP 500). A bandwidth/transcoding limit likely rejected this session. Ask the owner to adjust it.'
 	String get serverLimitBody => 'Server error (HTTP 500). A bandwidth/transcoding limit likely rejected this session. Ask the owner to adjust it.';
+
+	/// en: 'Try transcoding'
+	String get serverLimitTranscode => 'Try transcoding';
 
 	/// en: 'File unavailable'
 	String get mediaUnreadableTitle => 'File unavailable';
@@ -3267,6 +3283,9 @@ class Translations$discover$en {
 	/// en: 'Continue Watching in ${library}'
 	String continueWatchingIn({required Object library}) => 'Continue Watching in ${library}';
 
+	/// en: 'Select Version'
+	String get selectVersion => 'Select Version';
+
 	/// en: 'Next Up'
 	String get nextUp => 'Next Up';
 
@@ -3509,6 +3528,9 @@ class Translations$libraries$en {
 	/// en: 'Library options'
 	String get libraryOptions => 'Library options';
 
+	/// en: 'Shuffle library'
+	String get shuffleLibrary => 'Shuffle library';
+
 	/// en: 'library content'
 	String get content => 'library content';
 
@@ -3523,6 +3545,9 @@ class Translations$libraries$en {
 
 	/// en: 'No collections in this library'
 	String get noCollections => 'No collections in this library';
+
+	/// en: 'No genres in this library'
+	String get noGenres => 'No genres in this library';
 
 	/// en: 'No folders found'
 	String get noFoldersFound => 'No folders found';
@@ -3914,6 +3939,9 @@ class Translations$liveTv$en {
 
 	/// en: 'LIVE'
 	String get live => 'LIVE';
+
+	/// en: 'NEW'
+	String get premiereBadge => 'NEW';
 
 	/// en: 'Reload Guide'
 	String get reloadGuide => 'Reload Guide';
@@ -5303,6 +5331,9 @@ class Translations$performanceOverlay$en {
 	/// en: 'Player'
 	String get player => 'Player';
 
+	/// en: 'Play Method'
+	String get playMethod => 'Play Method';
+
 	/// en: 'Memory'
 	String get memory => 'Memory';
 
@@ -6085,6 +6116,66 @@ class Translations$addServer$en {
 	String redirectUnsupportedEnterFinal({required Object product}) => 'The server redirected to an unsupported URL. Enter the final ${product} URL directly.';
 }
 
+// Path: deepLinks
+class Translations$deepLinks$en {
+	Translations$deepLinks$en.internal(this._root);
+
+	final Translations _root; // ignore: unused_field
+
+	// Translations
+
+	/// en: 'This Plezy link isn't valid.'
+	String get invalid => 'This Plezy link isn\'t valid.';
+
+	/// en: 'No profile matches "${profile}".'
+	String profileNotFound({required Object profile}) => 'No profile matches "${profile}".';
+
+	/// en: 'Couldn't reach the server for this link.'
+	String get serverUnavailable => 'Couldn\'t reach the server for this link.';
+
+	/// en: 'Couldn't find this title in your libraries.'
+	String get notFound => 'Couldn\'t find this title in your libraries.';
+
+	/// en: 'This link can't be played.'
+	String get unsupportedItem => 'This link can\'t be played.';
+
+	/// en: 'No Live TV server is available for this link.'
+	String get noLiveTv => 'No Live TV server is available for this link.';
+
+	/// en: 'Couldn't find channel "${channel}".'
+	String channelNotFound({required Object channel}) => 'Couldn\'t find channel "${channel}".';
+
+	/// en: 'Show link'
+	String get showLink => 'Show link';
+
+	/// en: 'Show profile link'
+	String get showProfileLink => 'Show profile link';
+
+	/// en: 'Link'
+	String get dialogTitle => 'Link';
+
+	/// en: 'Opening this link plays the next episode. Add &mode=shuffle to play the show on shuffle.'
+	String get showHint => 'Opening this link plays the next episode. Add &mode=shuffle to play the show on shuffle.';
+
+	/// en: 'Opening this link plays the movie.'
+	String get movieHint => 'Opening this link plays the movie.';
+
+	/// en: 'Opening this link plays this episode.'
+	String get episodeHint => 'Opening this link plays this episode.';
+
+	/// en: 'Opening this link switches to this profile.'
+	String get profileHint => 'Opening this link switches to this profile.';
+
+	/// en: 'Open as ${name}'
+	String openAsProfile({required Object name}) => 'Open as ${name}';
+
+	/// en: 'Copy'
+	String get copy => 'Copy';
+
+	/// en: 'Link copied'
+	String get copied => 'Link copied';
+}
+
 // Path: appIcon.names
 class Translations$appIcon$names$en {
 	Translations$appIcon$names$en.internal(this._root);
@@ -6267,8 +6358,8 @@ class Translations$supporter$errors$en {
 	/// en: 'Purchases aren't available. Check that you're signed in to the store and purchases are allowed on this device.'
 	String get storeUnavailable => 'Purchases aren\'t available. Check that you\'re signed in to the store and purchases are allowed on this device.';
 
-	/// en: 'The Supporter purchase isn't available in your store right now.'
-	String get productNotFound => 'The Supporter purchase isn\'t available in your store right now.';
+	/// en: 'The Theme & Icon Pack isn't available in your store right now.'
+	String get productNotFound => 'The Theme & Icon Pack isn\'t available in your store right now.';
 
 	/// en: 'Couldn't load the price. Check your connection and try again.'
 	String get productQueryFailed => 'Couldn\'t load the price. Check your connection and try again.';
@@ -6279,8 +6370,8 @@ class Translations$supporter$errors$en {
 	/// en: 'Couldn't reach the store to restore your purchase. Try again.'
 	String get restoreFailed => 'Couldn\'t reach the store to restore your purchase. Try again.';
 
-	/// en: 'No Supporter purchase was found for this store account.'
-	String get nothingToRestore => 'No Supporter purchase was found for this store account.';
+	/// en: 'No Theme & Icon Pack purchase was found for this store account.'
+	String get nothingToRestore => 'No Theme & Icon Pack purchase was found for this store account.';
 }
 
 // Path: themeEditor.slots
@@ -6638,6 +6729,9 @@ class Translations$libraries$tabs$en {
 
 	/// en: 'Collections'
 	String get collections => 'Collections';
+
+	/// en: 'Genres'
+	String get genres => 'Genres';
 
 	/// en: 'Playlists'
 	String get playlists => 'Playlists';
@@ -7302,6 +7396,12 @@ class Translations$explore$detail$en {
 	/// en: 'Open on ${site}'
 	String openOn({required Object site}) => 'Open on ${site}';
 
+	/// en: 'Couldn't open the trailer on this device'
+	String get trailerUnavailable => 'Couldn\'t open the trailer on this device';
+
+	/// en: 'Couldn't open this link on this device'
+	String get linkUnavailable => 'Couldn\'t open this link on this device';
+
 	/// en: 'Crew'
 	String get crew => 'Crew';
 
@@ -7464,8 +7564,8 @@ class Translations$watchTogether$notices$en {
 	/// en: 'Couldn't share this video with the room'
 	String get shareFailed => 'Couldn\'t share this video with the room';
 
-	/// en: 'Downloaded videos aren't shared with the room'
-	String get notShared => 'Downloaded videos aren\'t shared with the room';
+	/// en: 'Downloads aren't shared with the room while their server is offline'
+	String get downloadNotShared => 'Downloads aren\'t shared with the room while their server is offline';
 
 	/// en: 'Couldn't open the room's video'
 	String get openFailed => 'Couldn\'t open the room\'s video';
@@ -8026,8 +8126,8 @@ extension on Translations {
 			'appIcon.title' => 'App icon',
 			'appIcon.defaultIcon' => 'Default',
 			'appIcon.current' => 'Current icon',
-			'appIcon.locked' => 'Supporter perk',
-			'appIcon.lockedHint' => 'Alternate icons are a Supporter perk.',
+			'appIcon.locked' => 'Part of the Theme & Icon Pack',
+			'appIcon.lockedHint' => 'Alternate icons are part of the Theme & Icon Pack.',
 			'appIcon.changeFailed' => 'Couldn\'t change the app icon',
 			'appIcon.launcherHint' => 'The new icon appears on your home screen once you leave Plezy.',
 			'appIcon.tvLauncherHint' => 'The new banner appears once you leave Plezy. Android TV can keep showing the old one until the TV restarts.',
@@ -8157,8 +8257,8 @@ extension on Translations {
 			'update.viewRelease' => 'View Release',
 			'update.latestVersion' => 'You are on the latest version',
 			'update.checkFailed' => 'Failed to check for updates',
-			'supporter.title' => 'Plezy Supporter',
-			'supporter.intro' => 'A one-time purchase that supports Plezy\'s development and unlocks cosmetic extras:',
+			'supporter.title' => 'Theme & Icon Pack',
+			'supporter.intro' => 'An optional one-time purchase that adds cosmetic extras:',
 			'supporter.presetThemes' => 'Preset themes',
 			'supporter.presetThemesDescription' => 'Ember, Glacier, Forest, Plum and Paper',
 			'supporter.customTheme' => 'Custom theme',
@@ -8169,17 +8269,17 @@ extension on Translations {
 			'supporter.loadingPrice' => 'Loading price...',
 			'supporter.restore' => 'Restore Purchases',
 			'supporter.pending' => 'Your purchase is waiting for payment or approval. The extras unlock as soon as the store completes it.',
-			'supporter.thankYouTitle' => 'Thank you for supporting Plezy',
-			'supporter.thankYouBody' => 'Your Supporter extras are unlocked.',
+			'supporter.thankYouTitle' => 'Thanks for your purchase',
+			'supporter.thankYouBody' => 'The Theme & Icon Pack is unlocked.',
 			'supporter.tileSubtitle' => 'Unlock themes and app icons with a one-time purchase',
 			'supporter.tileSubtitleThemesOnly' => 'Unlock themes with a one-time purchase',
-			'supporter.tileUnlocked' => 'Thank you for your support',
+			'supporter.tileUnlocked' => 'Unlocked — thanks for your purchase',
 			'supporter.errors.storeUnavailable' => 'Purchases aren\'t available. Check that you\'re signed in to the store and purchases are allowed on this device.',
-			'supporter.errors.productNotFound' => 'The Supporter purchase isn\'t available in your store right now.',
+			'supporter.errors.productNotFound' => 'The Theme & Icon Pack isn\'t available in your store right now.',
 			'supporter.errors.productQueryFailed' => 'Couldn\'t load the price. Check your connection and try again.',
 			'supporter.errors.purchaseFailed' => 'The purchase didn\'t go through. Try again.',
 			'supporter.errors.restoreFailed' => 'Couldn\'t reach the store to restore your purchase. Try again.',
-			'supporter.errors.nothingToRestore' => 'No Supporter purchase was found for this store account.',
+			'supporter.errors.nothingToRestore' => 'No Theme & Icon Pack purchase was found for this store account.',
 			'settings.title' => 'Settings',
 			'settings.supportDeveloper' => 'Support Plezy',
 			'settings.supportDeveloperDescription' => 'Donate via Liberapay to fund development',
@@ -8509,6 +8609,7 @@ extension on Translations {
 			'settings.scopePlaybackSpeed' => 'Playback Speed',
 			'settings.scopeShaderPreset' => 'Shader Preset',
 			'settings.scopeAspectRatio' => 'Aspect Ratio',
+			'settings.scopeZoom' => 'Zoom',
 			'settings.scopeSyncOffsets' => 'Audio & Subtitle Sync',
 			'settings.playerScopeOff' => 'Don\'t save',
 			'settings.playerScopeGlobal' => 'Everywhere',
@@ -8521,8 +8622,8 @@ extension on Translations {
 			'themeEditor.customEmpty' => 'Not created yet',
 			'themeEditor.editCustom' => 'Edit custom theme',
 			'themeEditor.editCustomDescription' => 'Choose every color yourself',
-			'themeEditor.locked' => 'Unlock with Supporter',
-			'themeEditor.savedLocked' => 'Saved — unlocks with Supporter',
+			'themeEditor.locked' => 'Unlock with the Theme & Icon Pack',
+			'themeEditor.savedLocked' => 'Saved — unlocks with the Theme & Icon Pack',
 			'themeEditor.title' => 'Custom Theme',
 			'themeEditor.startFrom' => 'Start from',
 			'themeEditor.startFromDescription' => 'Copy all colors from another theme',
@@ -8533,9 +8634,9 @@ extension on Translations {
 			'themeEditor.slots.outline' => 'Outline',
 			'themeEditor.slots.text' => 'Text',
 			'themeEditor.slots.textMuted' => 'Secondary text',
-			'themeEditor.slots.accent' => 'Accent',
 			_ => null,
 		} ?? switch (path) {
+			'themeEditor.slots.accent' => 'Accent',
 			'themeEditor.opacity' => 'Opacity',
 			'themeEditor.hexHint' => '#RRGGBB or #AARRGGBB',
 			'themeEditor.fromOtherThemes' => 'From other themes',
@@ -8736,6 +8837,7 @@ extension on Translations {
 			'mediaMenu.deleteScopeUnverifiedNoFileInfo' => 'Your server did not provide file details for this item, so Plezy cannot check which files this will remove. It may delete more than the item named above.',
 			'mediaMenu.mediaDeletedSuccessfully' => 'Media item deleted successfully',
 			'mediaMenu.mediaFailedToDelete' => 'Failed to delete media item',
+			'mediaMenu.mediaDeletionDisabledOnServer' => 'Media deletion is turned off on this server. Turn on "Allow media deletion" in the server\'s Library settings.',
 			'mediaMenu.rate' => 'Rate',
 			'mediaMenu.playFromBeginning' => 'Play from Beginning',
 			'mediaMenu.playVersion' => 'Play Version...',
@@ -8831,7 +8933,8 @@ extension on Translations {
 			'videoControls.rotationLockButton' => 'Rotation lock',
 			'videoControls.lockScreen' => 'Lock screen',
 			'videoControls.screenLockButton' => 'Screen lock',
-			'videoControls.longPressToUnlock' => 'Long press to unlock',
+			'videoControls.tapToUnlock' => 'Tap to unlock',
+			'videoControls.tapAgainToUnlock' => 'Tap again to unlock',
 			'videoControls.timelineSlider' => 'Video timeline',
 			'videoControls.volumeSlider' => 'Volume level',
 			'videoControls.endsAt' => ({required Object time}) => 'Ends at ${time}',
@@ -8860,6 +8963,7 @@ extension on Translations {
 			'videoControls.subtitleDownloaded' => 'Subtitle downloaded',
 			'videoControls.subtitleDownloadedNotApplied' => 'Subtitle downloaded, but it could not be selected',
 			'videoControls.subtitleDownloadFailed' => 'Failed to download subtitle',
+			'videoControls.subtitleDownloadTimedOut' => 'The subtitle didn\'t appear in time. The download may have failed',
 			'videoControls.searchLanguages' => 'Search languages...',
 			'videoControls.skipIntro' => 'Skip Intro',
 			'videoControls.skipCredits' => 'Skip Credits',
@@ -8920,6 +9024,7 @@ extension on Translations {
 			'messages.switchingToCompatiblePlayer' => 'Switching to compatible player...',
 			'messages.serverLimitTitle' => 'Playback failed',
 			'messages.serverLimitBody' => 'Server error (HTTP 500). A bandwidth/transcoding limit likely rejected this session. Ask the owner to adjust it.',
+			'messages.serverLimitTranscode' => 'Try transcoding',
 			'messages.mediaUnreadableTitle' => 'File unavailable',
 			'messages.mediaUnreadableBody' => 'The server found this item but could not read its file (HTTP 404). The file was probably moved, deleted, or its storage is offline. Ask the server owner to check the file and rescan the library.',
 			'messages.serverBusyTitle' => 'Stream unavailable',
@@ -9043,13 +9148,13 @@ extension on Translations {
 			'profiles.profileNameHint' => 'e.g. Guests, Kids, Family Room',
 			'profiles.pinProtectionOptional' => 'PIN protection (optional)',
 			'profiles.pinExplain' => '4-digit PIN required to switch profiles.',
+			_ => null,
+		} ?? switch (path) {
 			'profiles.continueButton' => 'Continue',
 			'profiles.pinsDontMatch' => 'PINs don\'t match',
 			'profiles.tokenIdentityMismatch' => 'The Plex profile token resolved to an unexpected server',
 			'connections.sectionTitle' => 'Connections',
 			'connections.addConnection' => 'Add connection',
-			_ => null,
-		} ?? switch (path) {
 			'connections.addConnectionSubtitleNoProfile' => 'Sign in with Plex or connect a Jellyfin or Emby server',
 			'connections.addConnectionSubtitleScoped' => ({required Object displayName}) => 'Add to ${displayName}: Plex, Jellyfin, Emby, or another profile connection',
 			'connections.sessionExpiredOne' => ({required Object name}) => 'Session expired for ${name}',
@@ -9121,6 +9226,7 @@ extension on Translations {
 			'discover.addMediaToLibraries' => 'Add some media to your libraries',
 			'discover.continueWatching' => 'Continue Watching',
 			'discover.continueWatchingIn' => ({required Object library}) => 'Continue Watching in ${library}',
+			'discover.selectVersion' => 'Select Version',
 			'discover.nextUp' => 'Next Up',
 			'discover.nextUpIn' => ({required Object library}) => 'Next Up in ${library}',
 			'discover.recentlyAdded' => 'Recently Added',
@@ -9199,16 +9305,19 @@ extension on Translations {
 			'libraries.showLibrary' => 'Show library',
 			'libraries.hideLibrary' => 'Hide library',
 			'libraries.libraryOptions' => 'Library options',
+			'libraries.shuffleLibrary' => 'Shuffle library',
 			'libraries.content' => 'library content',
 			'libraries.selectLibrary' => 'Select library',
 			'libraries.filtersWithCount' => ({required Object count}) => 'Filters (${count})',
 			'libraries.noRecommendations' => 'No recommendations available',
 			'libraries.noCollections' => 'No collections in this library',
+			'libraries.noGenres' => 'No genres in this library',
 			'libraries.noFoldersFound' => 'No folders found',
 			'libraries.folders' => 'folders',
 			'libraries.tabs.recommended' => 'Recommended',
 			'libraries.tabs.browse' => 'Browse',
 			'libraries.tabs.collections' => 'Collections',
+			'libraries.tabs.genres' => 'Genres',
 			'libraries.tabs.playlists' => 'Playlists',
 			'libraries.groupings.title' => 'Grouping',
 			'libraries.groupings.all' => 'All',
@@ -9464,6 +9573,8 @@ extension on Translations {
 			'explore.detail.watchOn' => 'Watch on',
 			'explore.detail.watchTrailer' => 'Watch trailer',
 			'explore.detail.openOn' => ({required Object site}) => 'Open on ${site}',
+			'explore.detail.trailerUnavailable' => 'Couldn\'t open the trailer on this device',
+			'explore.detail.linkUnavailable' => 'Couldn\'t open this link on this device',
 			'explore.detail.crew' => 'Crew',
 			'explore.detail.ratings' => 'Ratings',
 			'explore.detail.schedule' => 'Schedule',
@@ -9489,6 +9600,7 @@ extension on Translations {
 			'liveTv.channelNumber' => ({required Object number}) => 'Channel ${number}',
 			'liveTv.unknownChannel' => 'Unknown channel',
 			'liveTv.live' => 'LIVE',
+			'liveTv.premiereBadge' => 'NEW',
 			'liveTv.reloadGuide' => 'Reload Guide',
 			'liveTv.searchGuide' => 'Search Guide',
 			'liveTv.searchHint' => 'Search channels & programs',
@@ -9550,6 +9662,8 @@ extension on Translations {
 			'liveTv.guideReloadRequested' => 'Guide refresh requested',
 			'liveTv.guideReloadFailed' => 'Couldn\'t refresh the guide',
 			'liveTv.rulesProcessRequested' => 'Rule re-evaluation requested',
+			_ => null,
+		} ?? switch (path) {
 			'liveTv.rulesProcessFailed' => 'Couldn\'t re-evaluate recording rules',
 			'liveTv.recordShow' => 'Record show',
 			'liveTv.recordSettings.startEarly' => 'Start early (seconds)',
@@ -9562,8 +9676,6 @@ extension on Translations {
 			'liveTv.recordSettings.keepUpToHint' => '0 keeps every episode',
 			'liveTv.startingInMinutes' => ({required Object minutes}) => 'Starting in ${minutes} min',
 			'liveTv.dayAtTime' => ({required Object day, required Object time}) => '${day} at ${time}',
-			_ => null,
-		} ?? switch (path) {
 			'liveTv.invalidPlaybackData' => ({required Object product}) => '${product} returned invalid Live TV playback data',
 			'liveTv.failedToStartChannel' => 'Could not start the live channel',
 			'liveTv.failedToBuildStreamUrl' => 'Could not build the stream URL',
@@ -9769,7 +9881,7 @@ extension on Translations {
 			'watchTogether.notices.searchFailed' => 'Some servers couldn\'t be searched for the room\'s video',
 			'watchTogether.notices.playBlocked' => 'Press play to start',
 			'watchTogether.notices.shareFailed' => 'Couldn\'t share this video with the room',
-			'watchTogether.notices.notShared' => 'Downloaded videos aren\'t shared with the room',
+			'watchTogether.notices.downloadNotShared' => 'Downloads aren\'t shared with the room while their server is offline',
 			'watchTogether.notices.openFailed' => 'Couldn\'t open the room\'s video',
 			'watchTogether.ended.ended' => 'The host ended the room',
 			'watchTogether.ended.kicked' => 'You were removed from the room',
@@ -10064,6 +10176,9 @@ extension on Translations {
 			'performanceOverlay.cacheLimit' => 'Cache Limit',
 			'performanceOverlay.speed' => 'Speed',
 			'performanceOverlay.player' => 'Player',
+			_ => null,
+		} ?? switch (path) {
+			'performanceOverlay.playMethod' => 'Play Method',
 			'performanceOverlay.memory' => 'Memory',
 			'performanceOverlay.uiFps' => 'UI FPS',
 			'performanceOverlay.fps' => 'FPS',
@@ -10076,8 +10191,6 @@ extension on Translations {
 			'performanceOverlay.decoderHardware' => 'Hardware',
 			'performanceOverlay.tunnelingActive' => 'Active',
 			'performanceOverlay.dvRpuFailed' => ({required Object converted, required Object failures}) => '${converted} (${failures} failed)',
-			_ => null,
-		} ?? switch (path) {
 			'externalPlayer.title' => 'External Player',
 			'externalPlayer.useExternalPlayer' => 'Use External Player',
 			'externalPlayer.useExternalPlayerDescription' => 'Open videos in another app',
@@ -10330,6 +10443,23 @@ extension on Translations {
 			'addServer.redirectDifferentHost' => ({required Object product}) => 'The server redirected to a different host. Enter the final ${product} URL directly.',
 			'addServer.redirectInsecure' => 'The server redirected from HTTPS to an insecure URL',
 			'addServer.redirectUnsupportedEnterFinal' => ({required Object product}) => 'The server redirected to an unsupported URL. Enter the final ${product} URL directly.',
+			'deepLinks.invalid' => 'This Plezy link isn\'t valid.',
+			'deepLinks.profileNotFound' => ({required Object profile}) => 'No profile matches "${profile}".',
+			'deepLinks.serverUnavailable' => 'Couldn\'t reach the server for this link.',
+			'deepLinks.notFound' => 'Couldn\'t find this title in your libraries.',
+			'deepLinks.unsupportedItem' => 'This link can\'t be played.',
+			'deepLinks.noLiveTv' => 'No Live TV server is available for this link.',
+			'deepLinks.channelNotFound' => ({required Object channel}) => 'Couldn\'t find channel "${channel}".',
+			'deepLinks.showLink' => 'Show link',
+			'deepLinks.showProfileLink' => 'Show profile link',
+			'deepLinks.dialogTitle' => 'Link',
+			'deepLinks.showHint' => 'Opening this link plays the next episode. Add &mode=shuffle to play the show on shuffle.',
+			'deepLinks.movieHint' => 'Opening this link plays the movie.',
+			'deepLinks.episodeHint' => 'Opening this link plays this episode.',
+			'deepLinks.profileHint' => 'Opening this link switches to this profile.',
+			'deepLinks.openAsProfile' => ({required Object name}) => 'Open as ${name}',
+			'deepLinks.copy' => 'Copy',
+			'deepLinks.copied' => 'Link copied',
 			_ => null,
 		};
 	}

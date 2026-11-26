@@ -24,7 +24,6 @@ import 'saf_storage_service.dart';
 import 'scoped_player_prefs.dart';
 import 'settings_mutation_service.dart';
 import 'settings_service.dart';
-import 'shader_service.dart';
 import 'shortcut_action.dart';
 import 'update_service.dart';
 
@@ -230,10 +229,6 @@ class AgentSettingsCommands {
         }
       case 'enable_hdr':
         if (Platform.isAndroid) return 'Android HDR output is controlled by the platform, not this setting.';
-      case 'ambient_lighting':
-        if (exo || !ShaderService.isPlatformSupported) {
-          return 'Ambient lighting requires mpv on a platform with shader support.';
-        }
       case 'hdr_tone_mapping':
         if (!Platform.isLinux) return 'HDR tone mapping selection requires the Linux native video plane.';
       case 'hdr_sdr_conversion':
@@ -244,11 +239,13 @@ class AgentSettingsCommands {
         }
       case 'tunneled_playback' || 'playback_buffer_tier' || 'subtitle_anchor_to_screen':
         if (!exo) return 'This setting requires the existing Android ExoPlayer backend.';
-      case 'custom_shaders' || 'global_shader_preset':
-        if (exo || !ShaderService.isPlatformSupported) {
-          return 'Shaders are unavailable on the current platform or player backend.';
-        }
-      case 'mpv_config_text' || 'mpv_config_presets' || 'deinterlace_mode' || 'subtitle_use_margins':
+      case 'mpv_config_text' ||
+          'mpv_config_presets' ||
+          'deinterlace_mode' ||
+          'subtitle_use_margins' ||
+          'ambient_lighting' ||
+          'custom_shaders' ||
+          'global_shader_preset':
         if (exo) return 'This setting requires the mpv backend.';
       case 'subtitle_render_resolution':
         if (!Platform.isAndroid && !Platform.isIOS && !Platform.isMacOS) {
@@ -350,6 +347,7 @@ class AgentSettingsCommands {
     'subtitle_position',
     'default_playback_speed',
     'default_box_fit_mode',
+    'default_video_zoom',
     'global_shader_preset',
     'custom_shaders',
     'mpv_config_text',
@@ -377,12 +375,7 @@ class AgentSettingsCommands {
     final reason = unsupportedReason(pref.key, context);
     var choices = pref.jsonChoices;
     if (pref == SettingsService.startupSection) {
-      choices = [
-        NavigationTabId.discover.name,
-        NavigationTabId.libraries.name,
-        NavigationTabId.liveTv.name,
-        NavigationTabId.search.name,
-      ];
+      choices = [for (final id in startupSectionTabs) id.name];
     }
     if (pref == SettingsService.subtitleRenderResolution &&
         (Platform.isIOS || Platform.isMacOS || Platform.isAndroid)) {

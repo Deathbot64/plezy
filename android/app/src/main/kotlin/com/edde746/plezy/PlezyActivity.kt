@@ -27,13 +27,14 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import androidx.annotation.RequiresApi
+import com.edde746.mpv.MediaCodecQuery
 import com.edde746.plezy.car.CarRestrictionsMonitor
+import com.edde746.plezy.deeplink.DeepLinkPlugin
 import com.edde746.plezy.exoplayer.ExoPlayerPlugin
 import com.edde746.plezy.mpv.MpvAudioPlayerPlugin
 import com.edde746.plezy.mpv.MpvPlayerPlugin
 import com.edde746.plezy.shared.AssistiveTechnologyMonitor
 import com.edde746.plezy.shared.DeviceQuirks
-import com.edde746.plezy.shared.MediaCodecQuery
 import com.edde746.plezy.shared.ThemeHelper
 import com.edde746.plezy.watchnext.WatchNextPlugin
 import io.flutter.embedding.android.FlutterActivity
@@ -111,7 +112,10 @@ class PlezyActivity : FlutterActivity() {
   private val APP_EXIT_CHANNEL = "com.plezy/app_exit"
   private val CAR_RESTRICTIONS_CHANNEL = "com.plezy/car_restrictions"
   private val ASSISTIVE_TECHNOLOGY_CHANNEL = "com.plezy/assistive_technology"
-  private var watchNextPlugin: WatchNextPlugin? = null
+
+  // Created with the activity rather than in configureFlutterEngine, so a link
+  // handled before the engine attaches still lands in the retained slot.
+  private val deepLinkPlugin = DeepLinkPlugin()
   private var carRestrictions: CarRestrictionsMonitor? = null
   private var carRestrictionsChannel: MethodChannel? = null
   private var assistiveTechnology: AssistiveTechnologyMonitor? = null
@@ -448,7 +452,10 @@ class PlezyActivity : FlutterActivity() {
         reason = exitInfo.reason,
         status = exitInfo.status,
         importance = exitInfo.importance,
-        timestamp = exitInfo.timestamp
+        timestamp = exitInfo.timestamp,
+        description = exitInfo.description,
+        pssKb = exitInfo.pss,
+        rssKb = exitInfo.rss
       ),
       deviceModel = Build.MODEL,
       apiLevel = Build.VERSION.SDK_INT,
@@ -516,9 +523,13 @@ class PlezyActivity : FlutterActivity() {
 
     // Wrap the content view in a layout that intercepts DPAD key events
     // before the IME input stage, which can consume DPAD direction events
-    // from virtual remotes before they reach Flutter's key handler.
+    // from virtual remotes before they reach Flutter's key handler. Both of
+    // its paths into FlutterView also drop modifier scan codes from
+    // non-modifier keys (see withoutModifierScanCode).
     val content = findViewById<ViewGroup>(android.R.id.content)
     val wrapper = object : FrameLayout(this) {
+      override fun dispatchKeyEvent(event: KeyEvent): Boolean = super.dispatchKeyEvent(event.withoutModifierScanCode())
+
       override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
         if (isDpadKeyCode(event.keyCode)) {
           logTextInputDiag { "preIme received ${describeKeyEvent(event)} ${describeImeState()}" }
@@ -531,7 +542,7 @@ class PlezyActivity : FlutterActivity() {
           KeyEvent.KEYCODE_DPAD_CENTER -> {
             if (shouldForwardDpadBeforeIme()) {
               logTextInputDiag { "preIme forwarding-to-Flutter-and-consuming ${describeKeyEvent(event)}" }
-              super.dispatchKeyEvent(event)
+              super.dispatchKeyEvent(event.withoutModifierScanCode())
               return true
             }
             logTextInputDiag { "preIme letting-IME-handle ${describeKeyEvent(event)}" }
@@ -575,19 +586,18 @@ class PlezyActivity : FlutterActivity() {
 
     if (isAndroidTvDevice()) installTextEditorProxy()
 
-    // Handle Watch Next deep link from initial launch. A restored activity or a
-    // relaunch from Recents carries the original launch intent, whose tap was
-    // already handled; replaying it would start that item again.
+    // Forward a deep link from the initial launch. A restored activity or a
+    // relaunch from Recents carries the original launch intent, whose link was
+    // already handled; replaying it would act on it again.
     val launchedFromHistory = (intent?.flags ?: 0) and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
     if (savedInstanceState == null && !launchedFromHistory) {
-      handleWatchNextIntent(intent)
+      handleDeepLinkIntent(intent)
     }
   }
 
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
-    // Handle Watch Next deep link when app is already running
-    handleWatchNextIntent(intent)
+    handleDeepLinkIntent(intent)
   }
 
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -629,12 +639,8 @@ class PlezyActivity : FlutterActivity() {
     super.onDestroy()
   }
 
-  private fun handleWatchNextIntent(intent: Intent?) {
-    val contentId = WatchNextPlugin.handleIntent(intent)
-    if (contentId != null) {
-      // Notify the plugin to send event to Flutter
-      watchNextPlugin?.notifyDeepLink(contentId)
-    }
+  private fun handleDeepLinkIntent(intent: Intent?) {
+    DeepLinkPlugin.linkFrom(intent)?.let(deepLinkPlugin::notifyLink)
   }
 
   // Connects the car UX-restriction monitor on first use, retrying while the platform signal is
@@ -700,8 +706,7 @@ class PlezyActivity : FlutterActivity() {
       manufacturer = Build.MANUFACTURER,
       isAndroidTv = isAndroidTv,
       sdkInt = Build.VERSION.SDK_INT,
-      supportsVulkan11 = isAndroidTv &&
-        packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, vulkan11),
+      supportsVulkan11 = packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, vulkan11),
       is64Bit = Process.is64Bit()
     )
   }
@@ -1001,9 +1006,8 @@ class PlezyActivity : FlutterActivity() {
       }
     }
 
-    // Register Watch Next plugin and keep reference for deep link handling
-    watchNextPlugin = WatchNextPlugin()
-    flutterEngine.plugins.add(watchNextPlugin!!)
+    flutterEngine.plugins.add(WatchNextPlugin())
+    flutterEngine.plugins.add(deepLinkPlugin)
 
     MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PIP_CHANNEL).setMethodCallHandler { call, result ->
       when (call.method) {

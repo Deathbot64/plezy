@@ -11,6 +11,8 @@ import '../../focus/input_mode_tracker.dart';
 import '../../mixins/tab_navigation_mixin.dart';
 import '../../mixins/tab_visibility_aware.dart';
 import '../../media/ids.dart';
+import '../../media/library_genre.dart';
+import '../../media/media_kind.dart';
 import '../../media/media_library.dart';
 import '../../providers/hidden_libraries_provider.dart';
 import '../../providers/libraries_provider.dart';
@@ -20,10 +22,12 @@ import '../../widgets/settings_builder.dart';
 import '../../utils/app_logger.dart';
 import '../../utils/platform_detector.dart';
 import '../../utils/content_utils.dart';
+import '../../utils/layout_constants.dart';
 import '../../widgets/app_menu.dart';
 import '../../widgets/desktop_app_bar.dart';
 import '../../widgets/focusable_tab_chip.dart';
 import '../../widgets/library_management_sheet.dart';
+import '../../services/media_list_playback_launcher.dart';
 import '../../services/storage_service.dart';
 import '../../mixins/refreshable.dart';
 import '../../i18n/strings.g.dart';
@@ -32,15 +36,25 @@ import 'state_messages.dart';
 import 'tabs/library_browse_tab.dart';
 import 'tabs/library_recommended_tab.dart';
 import 'tabs/library_collections_tab.dart';
+import 'tabs/library_genres_tab.dart';
 import 'tabs/library_playlists_tab.dart';
 import 'tabs/base_library_tab.dart';
 
-enum LibraryTabType { recommended, browse, collections, playlists }
+enum LibraryTabType { recommended, browse, collections, playlists, genres }
 
 List<LibraryTabType> visibleLibraryTabs(MediaLibrary library) {
   if (library.isShared) return [LibraryTabType.browse, LibraryTabType.playlists];
-  return LibraryTabType.values;
+  // Genres filter the library's own type; only movie and show libraries
+  // browse a type both backends tag with genres.
+  final hasGenres = library.kind == MediaKind.movie || library.kind == MediaKind.show;
+  return [
+    for (final tab in LibraryTabType.values)
+      if (tab != LibraryTabType.genres || hasGenres) tab,
+  ];
 }
+
+/// Entries of the narrow-phone toolbar's ⋮ menu.
+enum _LibrariesToolbarAction { manageLibraries, refresh }
 
 class LibrariesScreen extends StatefulWidget {
   final VoidCallback? onLibraryOrderChanged;
@@ -65,6 +79,7 @@ class _LibrariesScreenState extends State<LibrariesScreen>
   final _recommendedTabKey = GlobalKey();
   final _browseTabKey = GlobalKey();
   final _collectionsTabKey = GlobalKey();
+  final _genresTabKey = GlobalKey();
   final _playlistsTabKey = GlobalKey();
 
   String? _selectedLibraryGlobalKey;
@@ -82,6 +97,7 @@ class _LibrariesScreenState extends State<LibrariesScreen>
   bool _browseFiltersActive = false;
 
   final _libraryDropdownKey = GlobalKey<AppMenuButtonState<String>>();
+  final _toolbarMenuKey = GlobalKey<AppMenuButtonState<_LibrariesToolbarAction>>();
 
   List<LibraryTabType> _visibleTabs = LibraryTabType.values;
   List<FocusNode> _tabFocusNodes = List.generate(
@@ -316,6 +332,7 @@ class _LibrariesScreenState extends State<LibrariesScreen>
       LibraryTabType.recommended => _recommendedTabKey.currentState,
       LibraryTabType.browse => _browseTabKey.currentState,
       LibraryTabType.collections => _collectionsTabKey.currentState,
+      LibraryTabType.genres => _genresTabKey.currentState,
       LibraryTabType.playlists => _playlistsTabKey.currentState,
     };
   }
@@ -333,6 +350,20 @@ class _LibrariesScreenState extends State<LibrariesScreen>
   void _handleBrowseFiltersActiveChanged(bool active) {
     if (_browseFiltersActive == active) return;
     setState(() => _browseFiltersActive = active);
+  }
+
+  /// Show [genre] in Browse: persist it as the selection, reload a Browse
+  /// page that is already built, and switch to it. A user switch like a chip
+  /// tap, so the Browse tab is saved and focus follows the load.
+  Future<void> _openGenre(MediaLibrary library, LibraryGenre genre, {required bool canGroupByFolders}) async {
+    final libraryGlobalKey = library.globalKey;
+    await saveGenreBrowseSelection(library, genre, canGroupByFolders: canGroupByFolders);
+    if (!mounted || _selectedLibraryGlobalKey != libraryGlobalKey) return;
+    final browseIndex = _visibleTabs.indexOf(LibraryTabType.browse);
+    if (browseIndex < 0) return;
+    final Object? browse = _browseTabKey.currentState;
+    if (browse is Refreshable) browse.refresh();
+    tabController.animateTo(browseIndex);
   }
 
   /// Handle when a tab's data has finished loading
@@ -406,6 +437,7 @@ class _LibrariesScreenState extends State<LibrariesScreen>
     LibraryTabType.recommended => t.libraries.tabs.recommended,
     LibraryTabType.browse => t.libraries.tabs.browse,
     LibraryTabType.collections => t.libraries.tabs.collections,
+    LibraryTabType.genres => t.libraries.tabs.genres,
     LibraryTabType.playlists => t.libraries.tabs.playlists,
   };
 
@@ -444,6 +476,15 @@ class _LibrariesScreenState extends State<LibrariesScreen>
         suppressAutoFocus: suppressAutoFocus,
         onDataLoaded: () => _handleTabDataLoaded(tabIndex),
         onBack: focusTabBar,
+      ),
+      LibraryTabType.genres => LibraryGenresTab(
+        key: _genresTabKey,
+        library: library,
+        isActive: isActive,
+        suppressAutoFocus: suppressAutoFocus,
+        onDataLoaded: () => _handleTabDataLoaded(tabIndex),
+        onBack: focusTabBar,
+        onGenreSelected: (genre) => unawaited(_openGenre(library, genre, canGroupByFolders: canGroupByFolders)),
       ),
       LibraryTabType.playlists => LibraryPlaylistsTab(
         key: _playlistsTabKey,
@@ -627,6 +668,39 @@ class _LibrariesScreenState extends State<LibrariesScreen>
     );
   }
 
+  /// The narrow-phone ⋮ holding Manage Libraries and Refresh. The action owns
+  /// keyboard and D-pad Select; the menu button inside it owns pointer taps.
+  FocusableAction _buildToolbarMenuAction() {
+    return FocusableAction(
+      debugLabel: 'libraries_more',
+      tooltip: t.common.options,
+      onPressed: () => _toolbarMenuKey.currentState?.showButtonMenu(focusFirstItem: true),
+      child: AppMenuButton<_LibrariesToolbarAction>(
+        key: _toolbarMenuKey,
+        icon: const AppIcon(Symbols.more_vert_rounded, fill: 1),
+        tooltip: t.common.options,
+        adaptiveSheet: true,
+        anchorAlignment: AppMenuAnchorAlignment.end,
+        onSelected: (action) {
+          switch (action) {
+            case _LibrariesToolbarAction.manageLibraries:
+              _showLibraryManagementSheet();
+            case _LibrariesToolbarAction.refresh:
+              manualRefresh();
+          }
+        },
+        entriesBuilder: (_) => [
+          AppMenuItem(
+            value: _LibrariesToolbarAction.manageLibraries,
+            icon: Symbols.edit_rounded,
+            label: t.libraries.manageLibraries,
+          ),
+          AppMenuItem(value: _LibrariesToolbarAction.refresh, icon: Symbols.refresh_rounded, label: t.common.refresh),
+        ],
+      ),
+    );
+  }
+
   AppMenuHeader<String> _buildLibraryServerHeaderMenuItem(MediaLibrary library, String serverKey) {
     return AppMenuHeader<String>(
       child: LibraryServerLabel(
@@ -728,23 +802,42 @@ class _LibrariesScreenState extends State<LibrariesScreen>
           children: [
             AppIcon(ContentTypeHelper.getLibraryIcon(selectedLibrary.kind.id), fill: 1, size: 20),
             const SizedBox(width: 8),
+            // Flexible bounds the name to the space the toolbar actions leave,
+            // so a long name ellipsizes instead of painting under them (#3021).
             if (librariesSpanMultipleServers(visibleLibraries) && selectedLibrary.serverName != null)
-              Column(
-                crossAxisAlignment: .start,
-                mainAxisSize: .min,
-                children: [
-                  Text(selectedLibrary.title, style: Theme.of(context).textTheme.titleMedium),
-                  LibraryServerLabel(
-                    library: selectedLibrary,
-                    badgeSize: 10,
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: Theme.of(context).textTheme.bodySmall?.color?.withValues(alpha: 0.6),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: .start,
+                  mainAxisSize: .min,
+                  children: [
+                    Text(
+                      selectedLibrary.title,
+                      style: Theme.of(context).textTheme.titleMedium,
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: .ellipsis,
                     ),
-                  ),
-                ],
+                    LibraryServerLabel(
+                      library: selectedLibrary,
+                      badgeSize: 10,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: Theme.of(context).textTheme.bodySmall?.color?.withValues(alpha: 0.6),
+                      ),
+                      constrainText: true,
+                    ),
+                  ],
+                ),
               )
             else
-              Text(selectedLibrary.title, style: Theme.of(context).textTheme.titleLarge),
+              Flexible(
+                child: Text(
+                  selectedLibrary.title,
+                  style: Theme.of(context).textTheme.titleLarge,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: .ellipsis,
+                ),
+              ),
             const SizedBox(width: 4),
             const AppIcon(Symbols.arrow_drop_down_rounded, fill: 1, size: 24),
           ],
@@ -793,15 +886,27 @@ class _LibrariesScreenState extends State<LibrariesScreen>
       return provider.getClientForServer(serverId)?.capabilities.folderGrouping ?? false;
     });
 
+    // Narrow phones fold Manage Libraries and Refresh into a ⋮ menu so the
+    // library picker keeps room for its name (#3021); Library options and
+    // Shuffle stay direct. With no libraries the menu would hold Refresh
+    // alone, so the empty and error states keep it as a button.
+    final collapseSecondaryActions =
+        !useSideNavigation && MediaQuery.sizeOf(context).width < ScreenBreakpoints.mobile && allLibraries.isNotEmpty;
+
+    // Stable labels let the action bar keep focus on a surviving action when
+    // the list changes shape: Library options comes and goes with Browse, and
+    // Manage and Refresh with the window width.
     List<FocusableAction> appBarActions() => [
-      if (allLibraries.isNotEmpty)
+      if (allLibraries.isNotEmpty && !collapseSecondaryActions)
         FocusableAction(
+          debugLabel: 'libraries_manage',
           icon: Symbols.edit_rounded,
           tooltip: t.libraries.manageLibraries,
           onPressed: _showLibraryManagementSheet,
         ),
       if (showBrowseOptionsAction)
         FocusableAction(
+          debugLabel: 'libraries_browse_options',
           icon: Symbols.tune_rounded,
           tooltip: t.libraries.libraryOptions,
           onPressed: _showBrowseOptionsForCurrentTab,
@@ -832,7 +937,22 @@ class _LibrariesScreenState extends State<LibrariesScreen>
                 )
               : null,
         ),
-      FocusableAction(icon: Symbols.refresh_rounded, tooltip: t.common.refresh, onPressed: manualRefresh),
+      if (selectedLibrary != null && MediaListPlaybackLauncher.canShuffleLibrary(selectedLibrary))
+        FocusableAction(
+          debugLabel: 'libraries_shuffle',
+          icon: Symbols.shuffle_rounded,
+          tooltip: t.libraries.shuffleLibrary,
+          onPressed: () => unawaited(MediaListPlaybackLauncher.shuffleLibrary(context, selectedLibrary)),
+        ),
+      if (collapseSecondaryActions)
+        _buildToolbarMenuAction()
+      else
+        FocusableAction(
+          debugLabel: 'libraries_refresh',
+          icon: Symbols.refresh_rounded,
+          tooltip: t.common.refresh,
+          onPressed: manualRefresh,
+        ),
     ];
 
     Widget appBar({required bool floating}) => DesktopSliverAppBar(
@@ -967,21 +1087,28 @@ class _LibrariesScreenState extends State<LibrariesScreen>
                     child: Container(
                       color: Theme.of(context).scaffoldBackgroundColor,
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: Row(
-                          children: [
-                            for (int i = 0; i < _visibleTabs.length; i++) ...[
-                              if (i > 0) const SizedBox(width: 8),
-                              buildTabChip(
-                                _getTabLabel(_visibleTabs[i]),
-                                i,
-                                onSelectWhenActive: _focusCurrentTab,
-                                onNavigateDown: _focusCurrentTabFromTabBar,
-                                onNavigateToActions: () => _actionBarKey.currentState?.requestFocusOnFirst(),
-                              ),
+                      // Horizontal-only SafeArea: the strip's background
+                      // stays full-bleed; its chips clear a landscape notch
+                      // or iPhone Duo's portrait sensor column.
+                      child: SafeArea(
+                        top: false,
+                        bottom: false,
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: [
+                              for (int i = 0; i < _visibleTabs.length; i++) ...[
+                                if (i > 0) const SizedBox(width: 8),
+                                buildTabChip(
+                                  _getTabLabel(_visibleTabs[i]),
+                                  i,
+                                  onSelectWhenActive: _focusCurrentTab,
+                                  onNavigateDown: _focusCurrentTabFromTabBar,
+                                  onNavigateToActions: () => _actionBarKey.currentState?.requestFocusOnFirst(),
+                                ),
+                              ],
                             ],
-                          ],
+                          ),
                         ),
                       ),
                     ),

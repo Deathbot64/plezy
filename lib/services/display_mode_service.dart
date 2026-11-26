@@ -7,7 +7,8 @@ import '../utils/app_logger.dart';
 import 'fullscreen_state_manager.dart';
 import 'settings_service.dart';
 
-/// Orchestrates Windows display mode matching (refresh rate, HDR) during video playback.
+/// Orchestrates desktop display mode matching during video playback: refresh
+/// rate on Windows and macOS, system HDR on Windows only.
 /// Uses the same platform channel as the mpv player (com.plezy/mpv_player).
 class DisplayModeService {
   static const _defaultChannel = MethodChannel('com.plezy/mpv_player');
@@ -16,36 +17,50 @@ class DisplayModeService {
   final FullscreenStateManager _fullscreen;
   final MethodChannel _channel;
   final bool? _isWindowsOverride;
+  final bool? _isMacOSOverride;
 
   bool _displayModeChanged = false;
   bool _hdrStateChanged = false;
 
+  /// Bumped by [restoreAll]. A match whose native calls straddle a restore
+  /// lands after the restore had nothing to undo, so it undoes itself.
+  int _restoreEpoch = 0;
+
   bool get hdrStateChanged => _hdrStateChanged;
   bool get anyChangeApplied => _displayModeChanged || _hdrStateChanged;
 
-  DisplayModeService(this._settings, this._fullscreen) : _channel = _defaultChannel, _isWindowsOverride = null;
+  DisplayModeService(this._settings, this._fullscreen)
+    : _channel = _defaultChannel,
+      _isWindowsOverride = null,
+      _isMacOSOverride = null;
 
   factory DisplayModeService.forTesting(
     SettingsService settings,
     FullscreenStateManager fullscreen, {
     required MethodChannel channel,
     bool isWindows = true,
-  }) => DisplayModeService._(settings, fullscreen, channel, isWindows);
+    bool isMacOS = false,
+  }) => DisplayModeService._(settings, fullscreen, channel, isWindows, isMacOS);
 
-  DisplayModeService._(this._settings, this._fullscreen, this._channel, this._isWindowsOverride);
+  DisplayModeService._(this._settings, this._fullscreen, this._channel, this._isWindowsOverride, this._isMacOSOverride);
 
   bool get _isWindows => _isWindowsOverride ?? Platform.isWindows;
+  bool get _isMacOS => _isMacOSOverride ?? Platform.isMacOS;
+
+  /// Whether the player channel has a display mode backend here.
+  bool get _isSupported => _isWindows || _isMacOS;
 
   /// Apply display matching from what mpv presents: [fps] is the derived
   /// output rate (container rate, doubled under deinterlacing) and [sigPeak]
   /// is `video-params/sig-peak`, above 1.0 for PQ/HLG content. Returns the
   /// delay duration to wait before starting playback.
   Future<Duration> applyDisplayMatching({required double? fps, required double? sigPeak}) async {
-    if (!_isWindows) return Duration.zero;
+    if (!_isSupported) return Duration.zero;
     if (!_fullscreen.isFullscreen) {
       appLogger.d('Display matching skipped: not in fullscreen');
       return Duration.zero;
     }
+    final epoch = _restoreEpoch;
 
     bool anyChange = false;
 
@@ -58,13 +73,21 @@ class DisplayModeService {
       }
     }
 
-    if (_settings.read(SettingsService.matchDynamicRange) && sigPeak != null && sigPeak > 1.0) {
+    if (_isWindows && _settings.read(SettingsService.matchDynamicRange) && sigPeak != null && sigPeak > 1.0) {
       try {
         final success = await _enableSystemHDR();
         anyChange |= success;
       } catch (e) {
         appLogger.w('Failed to enable system HDR', error: e);
       }
+    }
+
+    // Leaving fullscreen or closing the player while the native calls were in
+    // flight already ran its restore, which found nothing applied yet.
+    if (anyChange && (epoch != _restoreEpoch || !_fullscreen.isFullscreen)) {
+      appLogger.d('Display matching outlived its fullscreen session; restoring');
+      await _restoreChanges();
+      return Duration.zero;
     }
 
     if (anyChange) {
@@ -75,9 +98,15 @@ class DisplayModeService {
     return Duration.zero;
   }
 
+  /// Restore every change applied so far, and make any match still in flight
+  /// undo its own change when it lands.
   Future<void> restoreAll() async {
-    if (!_isWindows) return;
+    if (!_isSupported) return;
+    _restoreEpoch++;
+    await _restoreChanges();
+  }
 
+  Future<void> _restoreChanges() async {
     if (_hdrStateChanged) {
       try {
         final restored = await _channel.invokeMethod<bool>('restoreSystemHDR');
@@ -113,7 +142,7 @@ class DisplayModeService {
 
     final currentWidth = currentMode['width'] as int;
     final currentHeight = currentMode['height'] as int;
-    final currentRate = currentMode['refreshRate'] as int;
+    final currentRate = currentMode['refreshRate'] as num;
 
     final modes = await _channel.invokeListMethod<Map>('getDisplayModes');
     if (modes == null || modes.isEmpty) return false;
@@ -152,35 +181,64 @@ class DisplayModeService {
     return false;
   }
 
-  /// The refresh rate a Windows mode really runs at. Windows reports whole
-  /// hertz, and the NTSC-family 1000/1001 rates (23.976, 29.97, 59.94, and
-  /// their multiples such as 47.952 or 119.88) come through as one below the
+  /// The refresh rate a mode really runs at. macOS reports each mode's exact
+  /// rate as a double (47.95, 59.94). Windows reports whole hertz as an int,
+  /// and the NTSC-family 1000/1001 rates (23.976, 29.97, 59.94, and their
+  /// multiples such as 47.952 or 119.88) come through as one below the
   /// nominal rate: 23, 29, 59, 47, 119.
-  static double _effectiveRefreshRate(int rate) {
+  static double _effectiveRefreshRate(num rate) {
+    if (rate is double) return rate;
     final nominal = rate + 1;
     if (nominal % 24 == 0 || nominal % 30 == 0) return nominal * 1000 / 1001;
     return rate.toDouble();
   }
 
+  /// 25 and 30 fps-class content, which 50/60 Hz modes show at exactly twice
+  /// its rate.
+  static const _halfRateMinFps = 24.5;
+  static const _halfRateMaxFps = 30.5;
+
+  /// Relative rate error below which two matches are equally precise: above
+  /// the float noise in reported rates, below the 0.1% NTSC mismatch.
+  static const _preciseDeviation = 0.0002;
+
   /// Find the best matching refresh rate for a video fps: the lowest whole
   /// multiple of it within 0.5%, and of those the closest match — so
-  /// 23.976fps content takes a 23 (23.976) Hz mode over 24 Hz.
+  /// 23.976fps content takes a 23 (23.976) Hz mode over 24 Hz on Windows, and
+  /// 47.95 Hz over 48 Hz on a MacBook Pro. 25 and 30 fps-class content takes
+  /// 50/60 Hz over its own 25/30 Hz modes unless they are more precise, as
+  /// Android's DisplayModeSelector does (#3090). Returns the rate as the
+  /// platform reported it, which is what `setDisplayMode` takes back; 0 for no
+  /// match.
   @visibleForTesting
-  static int findBestRefreshRate(double videoFps, List<Map> modes, int currentWidth, int currentHeight) {
+  static num findBestRefreshRate(double videoFps, List<Map> modes, int currentWidth, int currentHeight) {
     if (videoFps <= 0) return 0;
 
-    final rates = <int>{};
+    final rates = <num>{};
     for (final mode in modes) {
       final w = mode['width'] as int;
       final h = mode['height'] as int;
       if (w == currentWidth && h == currentHeight) {
-        rates.add(mode['refreshRate'] as int);
+        rates.add(mode['refreshRate'] as num);
       }
     }
 
     if (rates.isEmpty) return 0;
 
-    int bestRate = 0;
+    final own = _lowestMultiple(videoFps, rates);
+    if (videoFps >= _halfRateMinFps && videoFps <= _halfRateMaxFps) {
+      // Precision leads: 60 Hz, 0.1% off for 29.97 fps, does not replace an
+      // exact 29.97 Hz mode.
+      final doubled = _lowestMultiple(videoFps * 2, rates);
+      if (doubled != null && (own == null || doubled.deviation - own.deviation < _preciseDeviation)) {
+        return doubled.rate;
+      }
+    }
+    return own?.rate ?? 0;
+  }
+
+  static ({num rate, double deviation})? _lowestMultiple(double videoFps, Set<num> rates) {
+    num bestRate = 0;
     int bestMultiplier = 0;
     double bestDeviation = 0;
 
@@ -208,16 +266,18 @@ class DisplayModeService {
       }
     }
 
-    return bestRate;
+    return bestRate == 0 ? null : (rate: bestRate, deviation: bestDeviation);
   }
 
   Future<void> syncWithNative() async {
-    if (!_isWindows) return;
+    if (!_isSupported) return;
     try {
       final modeChanged = await _channel.invokeMethod<bool>('isModeChanged');
       _displayModeChanged = modeChanged ?? false;
-      final hdrChanged = await _channel.invokeMethod<bool>('isHDRChanged');
-      _hdrStateChanged = hdrChanged ?? false;
+      if (_isWindows) {
+        final hdrChanged = await _channel.invokeMethod<bool>('isHDRChanged');
+        _hdrStateChanged = hdrChanged ?? false;
+      }
     } catch (e) {
       appLogger.w('Failed syncing native state', error: e);
     }

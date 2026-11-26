@@ -6,7 +6,11 @@ import MediaPlayer
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var deviceAdjustmentChannel: FlutterMethodChannel?
-  private var originalBrightness: CGFloat?
+  private var backupExclusionChannel: FlutterMethodChannel?
+  /// The screen whose brightness the player changed, and the level to restore
+  /// on it. Tracked per screen because iPhone Duo moves the app between its
+  /// outer and inner displays when folded or unfolded (#2861).
+  private var brightnessOverride: (screen: UIScreen, original: CGFloat)?
   private var volumeView: MPVolumeView?
   private weak var volumeSlider: UISlider?
 
@@ -14,7 +18,9 @@ import MediaPlayer
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    // Configure the non-mixing session; activate it only when playback starts.
+    // Configure the non-mixing session; activate it only for playback: a video
+    // player core claims it as it is created (MpvAudioSessionActivation), mpv's
+    // audio output otherwise.
     do {
       let session = AVAudioSession.sharedInstance()
       try session.setCategory(.playback, mode: .default)
@@ -56,8 +62,16 @@ import MediaPlayer
       registerDeviceAdjustmentChannel(messenger: registrar.messenger())
     }
 
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "BackupExclusionChannel") {
+      registerBackupExclusionChannel(messenger: registrar.messenger())
+    }
+
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "AppIconPlugin") {
       AppIconPlugin.register(with: registrar)
+    }
+
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "DeepLinkPlugin") {
+      DeepLinkPlugin.register(with: registrar)
     }
   }
 
@@ -71,21 +85,56 @@ import MediaPlayer
     deviceAdjustmentChannel = channel
   }
 
+  /// Marks a directory excluded from iCloud Backup. Downloads live in
+  /// `Documents`, which is backed up by default (#2958); a directory's mark
+  /// covers everything stored in it later.
+  private func registerBackupExclusionChannel(messenger: FlutterBinaryMessenger) {
+    let channel = FlutterMethodChannel(name: "com.plezy/backup_exclusion", binaryMessenger: messenger)
+    channel.setMethodCallHandler { call, result in
+      guard call.method == "excludeFromBackup" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      guard let path = call.arguments as? String, !path.isEmpty else {
+        result(FlutterError(code: "INVALID_ARGUMENT", message: "Expected a directory path", details: nil))
+        return
+      }
+      var url = URL(fileURLWithPath: path, isDirectory: true)
+      var values = URLResourceValues()
+      values.isExcludedFromBackup = true
+      do {
+        try url.setResourceValues(values)
+        result(nil)
+      } catch {
+        result(FlutterError(code: "EXCLUDE_FROM_BACKUP_FAILED", message: error.localizedDescription, details: nil))
+      }
+    }
+    backupExclusionChannel = channel
+  }
+
   private func handleDeviceAdjustmentCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "getBrightness":
-      result(Double(UIScreen.main.brightness))
+      result(activeScreen.map { Double($0.brightness) })
     case "setBrightness":
       guard let value = normalizedArgument(call.arguments, result: result) else { return }
-      if originalBrightness == nil {
-        originalBrightness = UIScreen.main.brightness
+      guard let screen = activeScreen else {
+        result(FlutterError(code: "DEVICE_ADJUSTMENT_UNAVAILABLE", message: "No active screen", details: nil))
+        return
       }
-      UIScreen.main.brightness = CGFloat(value)
+      if let override = brightnessOverride, override.screen !== screen {
+        override.screen.brightness = override.original
+        brightnessOverride = nil
+      }
+      if brightnessOverride == nil {
+        brightnessOverride = (screen, screen.brightness)
+      }
+      screen.brightness = CGFloat(value)
       result(nil)
     case "restoreBrightness":
-      if let originalBrightness = originalBrightness {
-        UIScreen.main.brightness = originalBrightness
-        self.originalBrightness = nil
+      if let override = brightnessOverride {
+        override.screen.brightness = override.original
+        brightnessOverride = nil
       }
       result(nil)
     case "getMediaVolume":
@@ -151,6 +200,12 @@ import MediaPlayer
       if let slider = findVolumeSlider(in: subview) { return slider }
     }
     return nil
+  }
+
+  /// The display showing the app. Not `UIScreen.main`: on iPhone Duo that is
+  /// the outer display even while the app is on the inner one (#2861).
+  private var activeScreen: UIScreen? {
+    activeWindow?.windowScene?.screen
   }
 
   private var activeWindow: UIWindow? {
